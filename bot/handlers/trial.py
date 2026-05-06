@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F
@@ -10,6 +11,8 @@ import xui_api
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+XUI_TIMEOUT = 120
 
 
 @router.message(F.text == "🎁 Пробный период")
@@ -39,17 +42,34 @@ async def cmd_trial(message: Message):
         return
 
     try:
-        await proc_msg.edit_text("⏳ Идёт создание аккаунта VPN...")
+        await proc_msg.edit_text("⏳ Соединение с VPN-сервером...")
+
+        # Убеждаемся что сессия с x-ui свежая (как в buy handler)
+        await xui_api.login()
+
+        await proc_msg.edit_text("⏳ Создание VPN-аккаунта... (может занять до 1 минуты)")
 
         sub_id = user["sub_id"]
-        ok = await xui_api.add_client_to_all_inbounds(
-            tg_id=tg_id,
-            sub_id=sub_id,
-            days=TRIAL_DAYS,
-            is_trial=True,
-        )
-
-        await proc_msg.edit_text("⏳ Применение настроек на сервере...")
+        try:
+            ok = await asyncio.wait_for(
+                xui_api.add_client_to_all_inbounds(
+                    tg_id=tg_id,
+                    sub_id=sub_id,
+                    days=TRIAL_DAYS,
+                    is_trial=True,
+                ),
+                timeout=XUI_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Trial xui timeout for user %s", tg_id)
+            await unmark_trial_used(tg_id)
+            await proc_msg.edit_text(
+                f"⚠️ Сервер VPN не ответил вовремя.\n"
+                f"Попробуйте ещё раз или обратитесь в поддержку: @rl_highest\n"
+                f"ID: <code>{tg_id}</code>",
+                parse_mode="HTML",
+            )
+            return
 
         if ok:
             await update_subscription(tg_id, TRIAL_DAYS)
