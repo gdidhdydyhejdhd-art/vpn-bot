@@ -18,7 +18,11 @@ async def init_db():
                 sub_id TEXT UNIQUE,
                 is_banned INTEGER DEFAULT 0,
                 last_reminder TEXT,
-                referred_by INTEGER DEFAULT NULL
+                referred_by INTEGER DEFAULT NULL,
+                channel_verified INTEGER DEFAULT 0,
+                pin_verified INTEGER DEFAULT 0,
+                frozen_until TEXT,
+                frozen_at TEXT
             )
         """)
         await db.execute("""
@@ -42,12 +46,15 @@ async def init_db():
                 rewarded INTEGER DEFAULT 0
             )
         """)
-        # Migrate existing columns
         for col, definition in [
             ("trial_used_at", "TEXT"),
             ("last_reminder", "TEXT"),
             ("is_banned", "INTEGER DEFAULT 0"),
             ("referred_by", "INTEGER DEFAULT NULL"),
+            ("channel_verified", "INTEGER DEFAULT 0"),
+            ("pin_verified", "INTEGER DEFAULT 0"),
+            ("frozen_until", "TEXT"),
+            ("frozen_at", "TEXT"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
@@ -90,7 +97,7 @@ async def update_subscription(tg_id: int, days: int):
     new_end = base + timedelta(days=days)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE users SET subscription_end = ?, last_reminder = NULL WHERE tg_id = ?",
+            "UPDATE users SET subscription_end = ?, last_reminder = NULL, frozen_until = NULL, frozen_at = NULL WHERE tg_id = ?",
             (new_end.isoformat(), tg_id),
         )
         await db.commit()
@@ -100,12 +107,10 @@ async def mark_trial_used(tg_id: int) -> bool:
     """Atomically mark trial as used. Returns True if the trial was reserved (wasn't used before)."""
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        # This UPDATE will only affect a row if trial_used == 0, making it atomic.
         cur = await db.execute(
             "UPDATE users SET trial_used = 1, trial_used_at = ? WHERE tg_id = ? AND trial_used = 0",
             (now, tg_id),
         )
-        # Read rowcount BEFORE commit — aiosqlite resets changes() after commit
         changed = cur.rowcount
         await db.commit()
         return changed > 0
@@ -116,6 +121,64 @@ async def unmark_trial_used(tg_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET trial_used = 0, trial_used_at = NULL WHERE tg_id = ?",
+            (tg_id,),
+        )
+        await db.commit()
+
+
+async def set_channel_verified(tg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET channel_verified = 1 WHERE tg_id = ?", (tg_id,))
+        await db.commit()
+
+
+async def set_pin_verified(tg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET pin_verified = 1 WHERE tg_id = ?", (tg_id,))
+        await db.commit()
+
+
+async def freeze_subscription(tg_id: int) -> bool:
+    """Freeze subscription: save end date, clear active subscription."""
+    user = await get_user(tg_id)
+    if not user or not user.get("subscription_end"):
+        return False
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET frozen_until = subscription_end, frozen_at = ?, subscription_end = NULL WHERE tg_id = ?",
+            (now, tg_id),
+        )
+        await db.commit()
+    return True
+
+
+async def unfreeze_subscription(tg_id: int) -> tuple[bool, datetime | None]:
+    """Unfreeze: restore subscription extended by the freeze duration."""
+    user = await get_user(tg_id)
+    if not user or not user.get("frozen_until"):
+        return False, None
+    try:
+        frozen_at = datetime.fromisoformat(user["frozen_at"])
+        frozen_until = datetime.fromisoformat(user["frozen_until"])
+        days_frozen = max(0, (datetime.utcnow() - frozen_at).days)
+        new_end = frozen_until + timedelta(days=days_frozen)
+    except Exception:
+        return False, None
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET subscription_end = ?, frozen_until = NULL, frozen_at = NULL WHERE tg_id = ?",
+            (new_end.isoformat(), tg_id),
+        )
+        await db.commit()
+    return True, new_end
+
+
+async def cancel_subscription(tg_id: int):
+    """Cancel subscription: clear from DB."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET subscription_end = NULL, frozen_until = NULL, frozen_at = NULL WHERE tg_id = ?",
             (tg_id,),
         )
         await db.commit()
@@ -132,7 +195,6 @@ async def add_payment(tg_id: int, plan: str, stars: int, charge_id: str = "",
 
 
 async def count_user_payments(tg_id: int) -> int:
-    """Count non-gift payments for a user (to detect first purchase)."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*) FROM payments WHERE tg_id = ? AND is_gift = 0", (tg_id,)
@@ -142,7 +204,6 @@ async def count_user_payments(tg_id: int) -> int:
 
 
 async def get_payment_history(tg_id: int, limit: int = 5) -> list[dict]:
-    """Get last N payments for a user."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -154,7 +215,6 @@ async def get_payment_history(tg_id: int, limit: int = 5) -> list[dict]:
 
 
 async def get_public_stats() -> dict:
-    """Stats visible to all users."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             total = (await cur.fetchone())[0]
@@ -235,10 +295,7 @@ async def has_active_subscription(tg_id: int) -> bool:
         return False
 
 
-# ── Referral functions ───────────────────────────────────────────────────────
-
 async def add_referral(referrer_id: int, referred_id: int) -> bool:
-    """Register a referral. Returns True if newly registered."""
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
@@ -269,7 +326,6 @@ async def get_referral_stats(referrer_id: int) -> dict:
 
 
 async def get_unrewarded_referral(referred_id: int) -> dict | None:
-    """Get unrewarded referral record for a newly paying user."""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
