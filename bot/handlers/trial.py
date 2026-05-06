@@ -34,20 +34,16 @@ async def cmd_trial(message: Message):
         )
         return
 
-    proc_msg = await message.answer("⏳ Подготовка...", reply_markup=ReplyKeyboardRemove())
+    # Убираем клавиатуру отдельным сообщением, не трогаем его потом
+    await message.answer("⏳ Создаю VPN-аккаунт, подождите...", reply_markup=ReplyKeyboardRemove())
 
     reserved = await mark_trial_used(tg_id)
     if not reserved:
-        await proc_msg.edit_text("❌ Пробный период уже был использован или в данный момент занят другим запросом.")
+        await message.answer("❌ Пробный период уже был использован.")
         return
 
     try:
-        await proc_msg.edit_text("⏳ Соединение с VPN-сервером...")
-
-        # Убеждаемся что сессия с x-ui свежая (как в buy handler)
         await xui_api.login()
-
-        await proc_msg.edit_text("⏳ Создание VPN-аккаунта... (может занять до 1 минуты)")
 
         sub_id = user["sub_id"]
         try:
@@ -63,7 +59,7 @@ async def cmd_trial(message: Message):
         except asyncio.TimeoutError:
             logger.error("Trial xui timeout for user %s", tg_id)
             await unmark_trial_used(tg_id)
-            await proc_msg.edit_text(
+            await message.answer(
                 f"⚠️ Сервер VPN не ответил вовремя.\n"
                 f"Попробуйте ещё раз или обратитесь в поддержку: @rl_highest\n"
                 f"ID: <code>{tg_id}</code>",
@@ -75,7 +71,7 @@ async def cmd_trial(message: Message):
             await update_subscription(tg_id, TRIAL_DAYS)
             sub_url = f"{XUI_SUB_URL}/{sub_id}"
             end_date = (datetime.utcnow() + timedelta(days=TRIAL_DAYS)).strftime("%d.%m.%Y")
-            await proc_msg.edit_text(
+            await message.answer(
                 f"✅ <b>Пробный период активирован!</b>\n\n"
                 f"📅 Срок: <b>{TRIAL_DAYS} дней</b> (до {end_date})\n"
                 f"📊 Трафик: <b>{TRIAL_GB} ГБ на каждый сервер</b>\n\n"
@@ -84,12 +80,12 @@ async def cmd_trial(message: Message):
                 f"• <b>Android:</b> v2rayNG, Hiddify\n"
                 f"• <b>iOS:</b> Streisand, Shadowrocket\n"
                 f"• <b>Windows/Mac:</b> Hiddify, v2rayN\n\n"
-                f"⚠️ <b>Пробный период можно использовать только один раз!</b>\n",
+                f"⚠️ <b>Пробный период можно использовать только один раз!</b>",
                 parse_mode="HTML",
             )
         else:
             await unmark_trial_used(tg_id)
-            await proc_msg.edit_text(
+            await message.answer(
                 f"⚠️ Ошибка при создании VPN-аккаунта.\n"
                 f"Обратитесь в поддержку с ID: <code>{tg_id}</code>",
                 parse_mode="HTML",
@@ -97,4 +93,4 @@ async def cmd_trial(message: Message):
     except Exception as e:
         logger.exception("Trial provisioning failed for %s: %s", tg_id, e)
         await unmark_trial_used(tg_id)
-        await proc_msg.edit_text("⚠️ Внутренняя ошибка при выдаче пробного периода. Попробуйте позже.")
+        await message.answer("⚠️ Внутренняя ошибка при выдаче пробного периода. Попробуйте позже.")
