@@ -4,15 +4,17 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import ADMIN_ID
-from database import has_active_subscription
+from config import ADMIN_ID, ACCESS_PIN
+from database import (
+    get_user, create_user, has_active_subscription,
+    set_channel_verified, set_pin_verified,
+)
 
 logger = logging.getLogger(__name__)
 
 CHANNEL_USERNAME = "vpss_official"
 CHANNEL_URL = f"https://t.me/{CHANNEL_USERNAME}"
 
-# True when bot lacks admin rights to check channel members
 _channel_unavailable: bool = False
 _admin_notified: bool = False
 
@@ -42,10 +44,6 @@ async def _notify_admin_no_rights(bot) -> None:
 
 
 async def _is_subscribed(bot, user_id: int) -> tuple[bool, bool]:
-    """
-    Returns (subscribed, can_check).
-    can_check=False means bot lacks permission — we can't verify.
-    """
     global _channel_unavailable
     try:
         member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
@@ -55,8 +53,7 @@ async def _is_subscribed(bot, user_id: int) -> tuple[bool, bool]:
         err = str(e).lower()
         if "inaccessible" in err or "not enough rights" in err or "administrator" in err:
             _channel_unavailable = True
-            return False, False  # can't check
-        # Other transient errors — treat as "can't check" to avoid blocking
+            return False, False
         logger.warning(f"Channel check transient error for {user_id}: {e}")
         return False, False
 
@@ -78,33 +75,53 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
         tg_id = user.id
         bot = data["bot"]
 
-        # Admin always passes
+        # Admin always passes everything
         if tg_id == ADMIN_ID:
             return await handler(event, data)
 
-        # Active subscribers always pass
-        if await has_active_subscription(tg_id):
+        # Ensure user exists in DB
+        user_db = await get_user(tg_id)
+        if not user_db:
+            user_db = await create_user(tg_id, user.username, user.first_name or "")
+
+        # ── PIN check ────────────────────────────────────────────────────────
+        if ACCESS_PIN and not user_db.get("pin_verified"):
+            if isinstance(event, Message) and event.text and event.text.strip() == ACCESS_PIN:
+                await set_pin_verified(tg_id)
+                from keyboards import main_menu
+                await event.answer(
+                    "✅ <b>PIN принят! Добро пожаловать!</b>\n\nВыбери действие:",
+                    reply_markup=main_menu(tg_id),
+                    parse_mode="HTML",
+                )
+                return
+            # Show PIN prompt
+            if isinstance(event, Message):
+                await event.answer("🔐 Для доступа к боту введите цифровой PIN-код:")
+            elif isinstance(event, CallbackQuery):
+                await event.answer("🔐 Сначала введите PIN-код в чате с ботом", show_alert=True)
+            return
+
+        # ── Channel subscription check ───────────────────────────────────────
+        # Skip if user already verified channel membership OR has active subscription
+        if user_db.get("channel_verified") or await has_active_subscription(tg_id):
             return await handler(event, data)
 
-        # "Я подписался" button
+        # Handle "✅ Я подписался" button
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
             subscribed, can_check = await _is_subscribed(bot, tg_id)
 
             if not can_check:
-                # Bot can't verify — notify admin once, then trust the user
                 await _notify_admin_no_rights(bot)
-                # Let the user through (trust-based fallback)
-                subscribed = True
+                subscribed = True  # Trust-based fallback
 
             if subscribed:
+                await set_channel_verified(tg_id)
                 await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
                 from keyboards import main_menu
-                from database import get_user, create_user
-                u = await get_user(tg_id)
-                if not u:
-                    await create_user(tg_id, user.username, user.first_name or "")
+                name = user.first_name or "друг"
                 await event.message.answer(
-                    "👋 <b>Добро пожаловать!</b>\n\nВыбери действие:",
+                    f"👋 <b>Добро пожаловать, {name}!</b>\n\nВыбери действие:",
                     reply_markup=main_menu(tg_id),
                     parse_mode="HTML",
                 )
@@ -115,18 +132,19 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                 )
             return
 
-        # Regular message/callback — check subscription
+        # Regular message — check subscription to channel
         subscribed, can_check = await _is_subscribed(bot, tg_id)
 
         if not can_check:
-            # Bot can't verify — notify admin, let user through
             await _notify_admin_no_rights(bot)
+            await set_channel_verified(tg_id)  # Trust-based: mark verified
             return await handler(event, data)
 
         if subscribed:
+            await set_channel_verified(tg_id)
             return await handler(event, data)
 
-        # Not subscribed — block with subscription prompt
+        # Not subscribed — block
         text = (
             f"📢 <b>Для использования бота подпишись на наш канал:</b>\n\n"
             f"👉 @{CHANNEL_USERNAME}\n\n"
