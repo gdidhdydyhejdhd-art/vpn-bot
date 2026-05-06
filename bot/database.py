@@ -285,3 +285,12 @@ async def mark_referral_rewarded(referral_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE referrals SET rewarded = 1 WHERE id = ?", (referral_id,))
         await db.commit()
+
+
+def can_use_trial(user: dict) -> tuple[bool, str]:
+    """Check if a user is allowed to use the trial period."""
+    if user.get("is_banned"):
+        return False, "Ваш аккаунт заблокирован."
+    if user.get("trial_used"):
+        return False, "Вы уже использовали пробный период."
+    return True, ""
