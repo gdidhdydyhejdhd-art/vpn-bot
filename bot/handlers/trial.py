@@ -30,10 +30,17 @@ async def _set_progress(msg, label: str, pct: int):
 
 async def _animate(msg, label: str, start: int, end: int, stop_event: asyncio.Event):
     pct = start
-    while not stop_event.is_set() and pct < end:
+    direction = 1
+    while not stop_event.is_set():
         await _set_progress(msg, label, pct)
         await asyncio.sleep(0.7)
-        pct = min(pct + 2, end)
+        pct += direction * 3
+        if pct >= end:
+            pct = end
+            direction = -1
+        elif pct <= start:
+            pct = start
+            direction = 1
 
 
 async def _run_with_bar(msg, coro, label: str, start: int = 5, end: int = 90):
