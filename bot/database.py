@@ -13,7 +13,7 @@ async def init_db():
                 first_name TEXT,
                 registered_at TEXT DEFAULT (datetime('now')),
                 trial_used INTEGER DEFAULT 0,
-                trial_last_used TEXT,
+                trial_used_at TEXT,
                 subscription_end TEXT,
                 sub_id TEXT UNIQUE,
                 is_banned INTEGER DEFAULT 0,
@@ -44,7 +44,7 @@ async def init_db():
         """)
         # Migrate existing columns
         for col, definition in [
-            ("trial_last_used", "TEXT"),
+            ("trial_used_at", "TEXT"),
             ("last_reminder", "TEXT"),
             ("is_banned", "INTEGER DEFAULT 0"),
             ("referred_by", "INTEGER DEFAULT NULL"),
@@ -97,30 +97,21 @@ async def update_subscription(tg_id: int, days: int):
 
 
 async def mark_trial_used(tg_id: int):
+    """Permanently mark trial as used. Can only be used once per user."""
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE users SET trial_used = 1, trial_last_used = ? WHERE tg_id = ?",
+            "UPDATE users SET trial_used = 1, trial_used_at = ? WHERE tg_id = ? AND trial_used = 0",
             (now, tg_id),
         )
         await db.commit()
 
 
 def can_use_trial(user: dict) -> tuple[bool, str]:
-    if not user.get("trial_used"):
-        return True, ""
-    trial_last = user.get("trial_last_used")
-    if not trial_last:
-        return False, "Пробный период уже был использован ранее."
-    try:
-        last_dt = datetime.fromisoformat(trial_last)
-        next_allowed = last_dt + timedelta(days=30)
-        if datetime.utcnow() >= next_allowed:
-            return True, ""
-        days_left = (next_allowed - datetime.utcnow()).days + 1
-        return False, f"Следующий триал доступен через <b>{days_left} дн.</b>"
-    except Exception:
-        return False, "Пробный период уже был использован."
+    """Check if user can use trial. Once used, it can NEVER be used again."""
+    if user.get("trial_used"):
+        return False, "Пробный период уже был использован. Он доступен только один раз."
+    return True, ""
 
 
 async def add_payment(tg_id: int, plan: str, stars: int, charge_id: str = "",
@@ -237,7 +228,7 @@ async def has_active_subscription(tg_id: int) -> bool:
         return False
 
 
-# ── Referral functions ────────────────────────────────────────────────────────
+# ── Referral functions ───────────────────────────────────────────────────────
 
 async def add_referral(referrer_id: int, referred_id: int) -> bool:
     """Register a referral. Returns True if newly registered."""
