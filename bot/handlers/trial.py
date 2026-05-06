@@ -34,7 +34,23 @@ async def cmd_trial(message: Message):
         )
         return
 
-    # Убираем клавиатуру отдельным сообщением, не трогаем его потом
+    # Persistent trial check: even if DB was reset, check x-ui for existing clients
+    try:
+        already_in_xui = await asyncio.wait_for(xui_api.user_exists_in_xui(tg_id), timeout=15)
+        if already_in_xui:
+            # User already has VPN account — deny trial and mark as used in DB
+            await mark_trial_used(tg_id)
+            await message.answer(
+                "❌ <b>Пробный период недоступен.</b>\n\n"
+                "Ты уже использовал пробный период ранее.\n\n"
+                "Купи подписку нажав 🛒 <b>Купить VPN</b>",
+                parse_mode="HTML",
+            )
+            return
+    except asyncio.TimeoutError:
+        logger.warning("x-ui existence check timed out for %s, proceeding anyway", tg_id)
+
+    # Remove keyboard in separate message (avoid edit_text issues)
     await message.answer("⏳ Создаю VPN-аккаунт, подождите...", reply_markup=ReplyKeyboardRemove())
 
     reserved = await mark_trial_used(tg_id)
