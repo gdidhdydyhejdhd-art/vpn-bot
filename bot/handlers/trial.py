@@ -45,17 +45,22 @@ async def _animate(msg, label: str, start: int, end: int, stop_event: asyncio.Ev
 
 async def _run_with_bar(msg, coro, label: str, start: int = 5, end: int = 90):
     stop = asyncio.Event()
-    anim = asyncio.create_task(_animate(msg, label, start, end, stop))
-    try:
-        result = await coro
-    finally:
-        stop.set()
-        anim.cancel()
+    result_holder = [False]
+    exc_holder: list = []
+
+    async def _worker():
         try:
-            await anim
-        except asyncio.CancelledError:
-            pass
-    return result
+            result_holder[0] = await coro
+        except Exception as e:
+            exc_holder.append(e)
+        finally:
+            stop.set()
+
+    await asyncio.gather(_animate(msg, label, start, end, stop), _worker())
+
+    if exc_holder:
+        raise exc_holder[0]
+    return result_holder[0]
 
 
 @router.message(F.text == "🎁 Пробный период")
