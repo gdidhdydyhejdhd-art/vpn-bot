@@ -1,12 +1,12 @@
 import logging
 from datetime import datetime
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 
-from config import XUI_SUB_URL
-from database import get_user, create_user
-from keyboards import sub_link_button
+from config import XUI_SUB_URL, PLANS
+from database import get_user, create_user, get_payment_history
+from keyboards import profile_menu
 import xui_api
 
 logger = logging.getLogger(__name__)
@@ -42,20 +42,27 @@ def _days_left(sub_end: str | None) -> str:
         return "?"
 
 
-@router.message(F.text == "👤 Профиль")
-@router.message(Command("profile"))
-async def cmd_profile(message: Message):
-    tg_id = message.from_user.id
+def _sub_end_str(sub_end: str | None) -> str:
+    if not sub_end:
+        return "—"
+    try:
+        end = datetime.fromisoformat(sub_end)
+        return end.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return sub_end[:16] if sub_end else "—"
 
+
+async def _build_profile_text(tg_id: int, first_name: str) -> tuple[str, str | None]:
     user = await get_user(tg_id)
     if not user:
-        user = await create_user(tg_id, message.from_user.username, message.from_user.first_name or "")
+        user = await create_user(tg_id, None, first_name)
 
     sub_end = user.get("subscription_end")
     sub_id = user.get("sub_id", "")
     sub_url = f"{XUI_SUB_URL}/{sub_id}" if sub_id else None
     status_emoji = _status_emoji(sub_end)
     days_left = _days_left(sub_end)
+    sub_end_str = _sub_end_str(sub_end)
     trial_status = "✅ использован" if user.get("trial_used") else "🎁 доступен"
 
     reg_date = user.get("registered_at", "")
@@ -81,16 +88,6 @@ async def cmd_profile(message: Message):
     except Exception as e:
         logger.warning(f"Traffic fetch failed: {e}")
 
-    text = (
-        f"👤 <b>Профиль</b>\n\n"
-        f"🆔 ID: <code>{tg_id}</code>\n"
-        f"👤 Имя: {message.from_user.first_name}\n"
-        f"📅 Регистрация: {reg_str}\n\n"
-        f"{status_emoji} <b>Подписка:</b> {days_left}\n"
-        f"🎁 Пробный: {trial_status}"
-        f"{traffic_lines}"
-    )
-
     is_active = False
     if sub_end:
         try:
@@ -99,9 +96,70 @@ async def cmd_profile(message: Message):
         except Exception:
             pass
 
+    text = (
+        f"👤 <b>Профиль</b>\n\n"
+        f"🆔 ID: <code>{tg_id}</code>\n"
+        f"👤 Имя: {first_name}\n"
+        f"📅 Регистрация: {reg_str}\n\n"
+        f"{status_emoji} <b>Статус подписки:</b> {days_left}\n"
+        f"📆 Действует до: <b>{sub_end_str}</b>\n"
+        f"🎁 Пробный период: {trial_status}"
+        f"{traffic_lines}"
+    )
+
     if sub_url and is_active:
-        text += f"\n\n🔗 Ссылка подписки:\n<code>{sub_url}</code>"
-        await message.answer(text, parse_mode="HTML", reply_markup=sub_link_button(sub_url))
+        text += f"\n\n🔗 <b>Ссылка подписки:</b>\n<code>{sub_url}</code>"
+        return text, sub_url
     else:
-        text += "\n\nНажми 🛒 <b>Купить VPN</b> для оформления подписки."
-        await message.answer(text, parse_mode="HTML")
+        text += "\n\n▶️ Нажми 🛒 <b>Купить VPN</b> для оформления подписки."
+        return text, None
+
+
+@router.message(F.text == "👤 Профиль")
+@router.message(Command("profile"))
+async def cmd_profile(message: Message):
+    tg_id = message.from_user.id
+    first_name = message.from_user.first_name or "Пользователь"
+    text, sub_url = await _build_profile_text(tg_id, first_name)
+    await message.answer(text, parse_mode="HTML", reply_markup=profile_menu(sub_url))
+
+
+@router.callback_query(F.data == "profile:refresh")
+async def profile_refresh(call: CallbackQuery):
+    tg_id = call.from_user.id
+    first_name = call.from_user.first_name or "Пользователь"
+    text, sub_url = await _build_profile_text(tg_id, first_name)
+    try:
+        await call.message.edit_text(text, parse_mode="HTML", reply_markup=profile_menu(sub_url))
+    except Exception:
+        pass
+    await call.answer("Обновлено!")
+
+
+@router.callback_query(F.data == "profile:copy_link")
+async def profile_copy_link(call: CallbackQuery):
+    await call.answer("Ссылка показана выше — нажми на неё чтобы скопировать", show_alert=True)
+
+
+@router.callback_query(F.data == "profile:payments")
+async def profile_payments(call: CallbackQuery):
+    tg_id = call.from_user.id
+    payments = await get_payment_history(tg_id, limit=10)
+    if not payments:
+        await call.answer("У тебя пока нет платежей.", show_alert=True)
+        return
+
+    lines = []
+    for p in payments:
+        plan = PLANS.get(p["plan"], {})
+        label = plan.get("label", p["plan"])
+        paid_at = p.get("paid_at", "")[:10]
+        if p.get("is_gift"):
+            lines.append(f"🎁 {paid_at} — {label} (подарок)")
+        else:
+            stars = p.get("stars", "?")
+            lines.append(f"💳 {paid_at} — {label} ({stars} ⭐)")
+
+    text = "💳 <b>История платежей (последние 10):</b>\n\n" + "\n".join(lines)
+    await call.message.answer(text, parse_mode="HTML")
+    await call.answer()
