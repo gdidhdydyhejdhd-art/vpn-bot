@@ -148,13 +148,39 @@ async def _get_inbound_full(inbound_id: int) -> dict | None:
 
 def _rand_ss_password() -> str:
     """16-byte key as standard base64 WITH padding — required by shadowsocks_2022."""
-    return base64.b64encode(os.urandom(16)).decode()  # e.g. "KIpZdve7dPIb9rfH99DT4w=="
+    return base64.b64encode(os.urandom(16)).decode()
 
 
 def _rand_auth(n: int = 10) -> str:
     """Random alphanumeric auth string for Hysteria2."""
     chars = string.ascii_letters + string.digits
     return "".join(random.choices(chars, k=n))
+
+
+def _get_ss_method(inbound: dict) -> str:
+    """Extract shadowsocks method from inbound settings."""
+    try:
+        settings = inbound.get("settings")
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+        method = (settings or {}).get("method", "")
+        if method:
+            return method
+    except Exception:
+        pass
+    return "aes-256-gcm"
+
+
+def _uses_xtls(inbound: dict) -> bool:
+    """Check if inbound uses XTLS security (requires flow field)."""
+    try:
+        stream = inbound.get("streamSettings")
+        if isinstance(stream, str):
+            stream = json.loads(stream)
+        security = (stream or {}).get("security", "")
+        return security == "xtls"
+    except Exception:
+        return False
 
 
 def _build_new_client(protocol: str, inbound: dict, tg_id: int, email: str,
@@ -173,14 +199,16 @@ def _build_new_client(protocol: str, inbound: dict, tg_id: int, email: str,
     }
     if protocol == "shadowsocks":
         base["password"] = _rand_ss_password()
-        base["method"] = ""
+        base["method"] = _get_ss_method(inbound)
         return base
     elif protocol in ("hysteria", "hysteria2"):
         base["auth"] = _rand_auth(10)
         return base
     else:
         base["id"] = str(uuid.uuid4())
-        base["flow"] = ""
+        # Only set flow for XTLS inbounds — empty string causes N/A in v2rayTun
+        if _uses_xtls(inbound):
+            base["flow"] = "xtls-rprx-vision"
         return base
 
 
@@ -266,6 +294,9 @@ async def _add_or_update_client(
         existing["totalGB"] = total_bytes
         existing["enable"] = True
         existing["subId"] = sub_id
+        # Remove flow if not XTLS to avoid N/A in clients
+        if not _uses_xtls(inbound) and "flow" in existing:
+            existing.pop("flow", None)
         return await _do_update_client(inbound_id, existing, protocol)
 
     # 2. Try to add as new
@@ -286,6 +317,8 @@ async def _add_or_update_client(
                 existing["totalGB"] = total_bytes
                 existing["enable"] = True
                 existing["subId"] = sub_id
+                if not _uses_xtls(inbound) and "flow" in existing:
+                    existing.pop("flow", None)
                 ok = await _do_update_client(inbound_id, existing, protocol)
                 if ok:
                     return True
@@ -314,22 +347,31 @@ async def add_client_to_all_inbounds(
     total_bytes = TRIAL_GB * 1024 ** 3 if is_trial else 0
     email = str(tg_id)
 
-    results = await asyncio.gather(*[
-        _add_or_update_client(
-            inbound=ib,
-            protocol=ib.get("protocol", "vless"),
-            tg_id=tg_id,
-            email=email,
-            sub_id=sub_id,
-            expiry_ms=expiry_ms,
-            total_bytes=total_bytes,
-        )
-        for ib in inbounds
-    ])
+    # Process inbounds SEQUENTIALLY — x-ui uses SQLite which doesn't handle
+    # concurrent writes well; parallel requests cause only the first to succeed.
+    success_count = 0
+    for ib in inbounds:
+        try:
+            ok = await _add_or_update_client(
+                inbound=ib,
+                protocol=ib.get("protocol", "vless"),
+                tg_id=tg_id,
+                email=email,
+                sub_id=sub_id,
+                expiry_ms=expiry_ms,
+                total_bytes=total_bytes,
+            )
+            if ok:
+                success_count += 1
+            else:
+                logger.warning(f"User {tg_id}: failed for inbound {ib.get('id')} ({ib.get('protocol')})")
+            # Small pause between requests to avoid DB contention in x-ui
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"User {tg_id}: exception on inbound {ib.get('id')}: {e}")
 
-    success = sum(1 for r in results if r)
-    logger.info(f"User {tg_id}: {success}/{len(inbounds)} inbounds OK")
-    return success > 0
+    logger.info(f"User {tg_id}: {success_count}/{len(inbounds)} inbounds OK")
+    return success_count > 0
 
 
 async def get_expiry_for_user(tg_id: int) -> int | None:
@@ -351,6 +393,23 @@ async def get_expiry_for_user(tg_id: int) -> int | None:
             if client:
                 return client.get("expiryTime")
     return None
+
+
+async def get_all_clients_traffic(tg_id: int) -> list[dict]:
+    """Get traffic stats for a user across all inbounds."""
+    email = str(tg_id)
+    traffics = []
+    inbounds = await get_inbounds()
+    for ib in inbounds:
+        for stat in (ib.get("clientStats") or []):
+            if stat.get("email") == email:
+                traffics.append({
+                    "up": stat.get("up", 0),
+                    "down": stat.get("down", 0),
+                    "inbound_id": ib.get("id"),
+                    "remark": ib.get("remark", ""),
+                })
+    return traffics
 
 
 def fmt_bytes(b: int | float) -> str:
