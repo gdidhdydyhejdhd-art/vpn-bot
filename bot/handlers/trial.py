@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F
@@ -10,6 +11,44 @@ import xui_api
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _bar(pct: int) -> str:
+    filled = int(10 * pct / 100)
+    return "▓" * filled + "░" * (10 - filled)
+
+
+async def _set_progress(msg, label: str, pct: int):
+    try:
+        await msg.edit_text(
+            f"⏳ <b>{label}</b>\n\n{_bar(pct)} {pct}%",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+async def _animate(msg, label: str, start: int, end: int, stop_event: asyncio.Event):
+    pct = start
+    while not stop_event.is_set() and pct < end:
+        await _set_progress(msg, label, pct)
+        await asyncio.sleep(0.7)
+        pct = min(pct + 2, end)
+
+
+async def _run_with_bar(msg, coro, label: str, start: int = 5, end: int = 90):
+    stop = asyncio.Event()
+    anim = asyncio.create_task(_animate(msg, label, start, end, stop))
+    try:
+        result = await coro
+    finally:
+        stop.set()
+        anim.cancel()
+        try:
+            await anim
+        except asyncio.CancelledError:
+            pass
+    return result
 
 
 @router.message(F.text == "🎁 Пробный период")
@@ -31,33 +70,38 @@ async def cmd_trial(message: Message):
         )
         return
 
-    # Убираем основную reply-клавиатуру, чтобы пользователь не мог нажимать параллельно
-    proc_msg = await message.answer("⏳ Подготовка... (0%)", reply_markup=ReplyKeyboardRemove())
+    proc_msg = await message.answer(
+        f"⏳ <b>Подготовка...</b>\n\n{_bar(0)} 0%",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="HTML",
+    )
 
-    # Атомарная резервация пробного в БД — вернёт True если удалось зарезервировать
     reserved = await mark_trial_used(tg_id)
     if not reserved:
         await proc_msg.edit_text("❌ Пробный период уже был использован или в данный момент занят другим запросом.")
         return
 
     try:
-        # Прогресс 30%
-        await proc_msg.edit_text("⏳ Резерв подтверждён (30%)\n\nИдёт создание аккаунта VPN...")
-
         sub_id = user["sub_id"]
-        ok = await xui_api.add_client_to_all_inbounds(
-            tg_id=tg_id,
-            sub_id=sub_id,
-            days=TRIAL_DAYS,
-            is_trial=True,
+
+        ok = await _run_with_bar(
+            proc_msg,
+            xui_api.add_client_to_all_inbounds(
+                tg_id=tg_id,
+                sub_id=sub_id,
+                days=TRIAL_DAYS,
+                is_trial=True,
+            ),
+            label="Создание VPN-аккаунта",
+            start=10,
+            end=90,
         )
 
-        # Прогресс 70%
-        await proc_msg.edit_text("⏳ Применение настроек на сервере (70%)...")
+        await _set_progress(proc_msg, "Применение настроек...", 95)
+        await asyncio.sleep(0.4)
 
         if ok:
             await update_subscription(tg_id, TRIAL_DAYS)
-            # Прогресс 100% — финальное сообщение
             sub_url = f"{XUI_SUB_URL}/{sub_id}"
             end_date = (datetime.utcnow() + timedelta(days=TRIAL_DAYS)).strftime("%d.%m.%Y")
             await proc_msg.edit_text(
@@ -73,7 +117,6 @@ async def cmd_trial(message: Message):
                 parse_mode="HTML",
             )
         else:
-            # Внешний API упал — откатываем резервацию
             await unmark_trial_used(tg_id)
             await proc_msg.edit_text(
                 f"⚠️ Ошибка при создании VPN-аккаунта.\n"
@@ -82,6 +125,5 @@ async def cmd_trial(message: Message):
             )
     except Exception as e:
         logger.exception("Trial provisioning failed for %s: %s", tg_id, e)
-        # Откат при исключении
         await unmark_trial_used(tg_id)
         await proc_msg.edit_text("⚠️ Внутренняя ошибка при выдаче пробного периода. Попробуйте позже.")
