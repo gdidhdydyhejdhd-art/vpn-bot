@@ -18,6 +18,7 @@ router = Router()
 class AdminStates(StatesGroup):
     waiting_give_user_id = State()
     waiting_give_plan = State()
+    waiting_broadcast = State()
 
 
 def is_admin(tg_id: int) -> bool:
@@ -72,7 +73,9 @@ async def admin_stats(call: CallbackQuery):
         f"👥 Всего пользователей: <b>{stats['total']}</b>\n"
         f"✅ Активных подписок: <b>{stats['active']}</b>\n"
         f"🎁 Использовали триал: <b>{stats['trials']}</b>\n"
-        f"⭐ Всего Stars заработано: <b>{stats['total_stars']}</b>"
+        f"⭐ Stars заработано: <b>{stats['total_stars']}</b>\n"
+        f"👥 Рефералов всего: <b>{stats['total_refs']}</b>\n"
+        f"🎁 Рефералов вознаграждено: <b>{stats['rewarded_refs']}</b>"
     )
     await call.message.edit_text(text, reply_markup=admin_menu(), parse_mode="HTML")
     await call.answer()
@@ -257,6 +260,52 @@ async def admin_free_activate(call: CallbackQuery):
             reply_markup=admin_menu(),
             parse_mode="HTML",
         )
+
+
+@router.callback_query(F.data == "admin:broadcast")
+async def admin_broadcast_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_broadcast)
+    await call.message.answer(
+        "📢 <b>Рассылка всем пользователям</b>\n\n"
+        "Отправь текст сообщения. Поддерживается <b>HTML</b> разметка.\n\n"
+        "Для отмены напиши /cancel",
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.message(AdminStates.waiting_broadcast)
+async def admin_broadcast_send(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    if message.text and message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Рассылка отменена.")
+        return
+
+    await state.clear()
+    users = await get_all_users()
+    text = message.text or ""
+
+    sent = 0
+    failed = 0
+    status_msg = await message.answer(f"⏳ Начинаю рассылку {len(users)} пользователям...")
+
+    for user in users:
+        try:
+            await message.bot.send_message(user["tg_id"], text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📤 Отправлено: <b>{sent}</b>\n"
+        f"❌ Не доставлено: <b>{failed}</b>",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "admin:back")
