@@ -423,3 +423,48 @@ def fmt_bytes(b: int | float) -> str:
             return f"{b:.1f} {unit}"
         b /= 1024
     return f"{b:.1f} ТБ"
+
+
+async def user_exists_in_xui(tg_id: int) -> bool:
+    """Check if user already has any clients in x-ui (persistent trial guard)."""
+    inbounds = await get_inbounds()
+    for ib in inbounds:
+        iid = ib.get("id", 0)
+        client = _find_client_in_settings(ib, _make_email(tg_id, iid), str(tg_id))
+        if client:
+            return True
+    return False
+
+
+async def toggle_client_in_all_inbounds(tg_id: int, sub_id: str, enable: bool) -> bool:
+    """Enable or disable all clients for a user across all inbounds."""
+    inbounds = await get_inbounds()
+    if not inbounds:
+        return False
+
+    success_count = 0
+    for ib in inbounds:
+        iid = ib.get("id", 0)
+        protocol = ib.get("protocol", "vless")
+        email = _make_email(tg_id, iid)
+        old_email = str(tg_id)
+
+        existing = _find_client_in_settings(ib, email, old_email)
+        if not existing:
+            full = await _get_inbound_full(iid)
+            if full:
+                existing = _find_client_in_settings(full, email, old_email)
+
+        if existing:
+            existing["enable"] = enable
+            existing["email"] = email
+            existing["subId"] = sub_id
+            if not _uses_xtls(ib):
+                existing.pop("flow", None)
+            ok = await _do_update_client(iid, existing, protocol)
+            if ok:
+                success_count += 1
+            await asyncio.sleep(0.1)
+
+    logger.info(f"toggle_client enable={enable} for user {tg_id}: {success_count}/{len(inbounds)} OK")
+    return success_count > 0
