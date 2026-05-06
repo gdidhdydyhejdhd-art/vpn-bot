@@ -5,7 +5,8 @@ from config import PLANS, ADMIN_ID
 def main_menu(tg_id: int = 0) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="🎁 Пробный период")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="👥 Реферальная программа")],
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="👥 Рефералы")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📱 Инструкция")],
         [KeyboardButton(text="📞 Поддержка")],
     ]
     if tg_id == ADMIN_ID:
@@ -31,12 +32,23 @@ def confirm_buy(plan_key: str) -> InlineKeyboardMarkup:
     ])
 
 
+def profile_menu(sub_url: str | None = None) -> InlineKeyboardMarkup:
+    buttons = []
+    if sub_url:
+        buttons.append([InlineKeyboardButton(text="🔗 Открыть ссылку подписки", url=sub_url)])
+        buttons.append([InlineKeyboardButton(text="📋 Скопировать ссылку", callback_data="profile:copy_link")])
+    buttons.append([InlineKeyboardButton(text="💳 История платежей", callback_data="profile:payments")])
+    buttons.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 def admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
         [InlineKeyboardButton(text="👥 Все пользователи", callback_data="admin:users")],
         [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data="admin:give")],
         [InlineKeyboardButton(text="🔧 Бесплатная покупка", callback_data="admin:free_buy")],
+        [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin:broadcast")],
     ])
 
 
