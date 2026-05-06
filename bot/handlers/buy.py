@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from aiogram import Router, F
@@ -19,6 +20,44 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 REFERRAL_BONUS_DAYS = 7
+
+
+def _bar(pct: int) -> str:
+    filled = int(10 * pct / 100)
+    return "▓" * filled + "░" * (10 - filled)
+
+
+async def _set_progress(msg, label: str, pct: int):
+    try:
+        await msg.edit_text(
+            f"⏳ <b>{label}</b>\n\n{_bar(pct)} {pct}%",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+async def _animate(msg, label: str, start: int, end: int, stop_event: asyncio.Event):
+    pct = start
+    while not stop_event.is_set() and pct < end:
+        await _set_progress(msg, label, pct)
+        await asyncio.sleep(0.7)
+        pct = min(pct + 2, end)
+
+
+async def _run_with_bar(msg, coro, label: str, start: int = 5, end: int = 90):
+    stop = asyncio.Event()
+    anim = asyncio.create_task(_animate(msg, label, start, end, stop))
+    try:
+        result = await coro
+    finally:
+        stop.set()
+        anim.cancel()
+        try:
+            await anim
+        except asyncio.CancelledError:
+            pass
+    return result
 
 
 @router.message(F.text == "🛒 Купить VPN")
@@ -110,21 +149,33 @@ async def on_successful_payment(message: Message):
     # Count BEFORE recording this payment (to detect first purchase)
     previous_payments = await count_user_payments(tg_id)
 
-    await message.answer("⏳ Активирую подписку...")
+    proc_msg = await message.answer(
+        f"⏳ <b>Активация подписки...</b>\n\n{_bar(0)} 0%",
+        parse_mode="HTML",
+    )
 
     sub_id = user["sub_id"]
     current_expiry = await xui_api.get_expiry_for_user(tg_id)
     now_ms = int(datetime.utcnow().timestamp() * 1000)
     extend = current_expiry is not None and current_expiry > now_ms
 
-    ok = await xui_api.add_client_to_all_inbounds(
-        tg_id=tg_id,
-        sub_id=sub_id,
-        days=plan["days"],
-        is_trial=False,
-        extend=extend,
-        current_expiry_ms=current_expiry,
+    ok = await _run_with_bar(
+        proc_msg,
+        xui_api.add_client_to_all_inbounds(
+            tg_id=tg_id,
+            sub_id=sub_id,
+            days=plan["days"],
+            is_trial=False,
+            extend=extend,
+            current_expiry_ms=current_expiry,
+        ),
+        label="Активация подписки",
+        start=10,
+        end=90,
     )
+
+    await _set_progress(proc_msg, "Сохранение данных...", 95)
+    await asyncio.sleep(0.4)
 
     await update_subscription(tg_id, plan["days"])
     await add_payment(tg_id, plan_key, plan["stars"], charge_id)
@@ -132,7 +183,7 @@ async def on_successful_payment(message: Message):
     sub_url = f"{XUI_SUB_URL}/{sub_id}"
 
     if ok:
-        await message.answer(
+        await proc_msg.edit_text(
             f"✅ <b>Подписка активирована!</b>\n\n"
             f"📦 Тариф: <b>{plan['label']}</b>\n"
             f"🔗 Ссылка для подключения:\n<code>{sub_url}</code>\n\n"
@@ -143,7 +194,7 @@ async def on_successful_payment(message: Message):
             parse_mode="HTML",
         )
     else:
-        await message.answer(
+        await proc_msg.edit_text(
             f"⚠️ Оплата прошла, но возникла ошибка при создании VPN-аккаунта.\n"
             f"Обратитесь в поддержку @rl_highest с вашим ID: <code>{tg_id}</code>",
             parse_mode="HTML",
