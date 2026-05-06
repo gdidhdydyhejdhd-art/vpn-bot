@@ -147,12 +147,10 @@ async def _get_inbound_full(inbound_id: int) -> dict | None:
 
 
 def _rand_ss_password() -> str:
-    """16-byte key as standard base64 WITH padding — required by shadowsocks_2022."""
     return base64.b64encode(os.urandom(16)).decode()
 
 
 def _rand_auth(n: int = 10) -> str:
-    """Random alphanumeric auth string for Hysteria2."""
     chars = string.ascii_letters + string.digits
     return "".join(random.choices(chars, k=n))
 
@@ -172,15 +170,24 @@ def _get_ss_method(inbound: dict) -> str:
 
 
 def _uses_xtls(inbound: dict) -> bool:
-    """Check if inbound uses XTLS security (requires flow field)."""
+    """Check if inbound uses XTLS security (flow field required)."""
     try:
         stream = inbound.get("streamSettings")
         if isinstance(stream, str):
             stream = json.loads(stream)
-        security = (stream or {}).get("security", "")
-        return security == "xtls"
+        return (stream or {}).get("security", "") == "xtls"
     except Exception:
         return False
+
+
+def _make_email(tg_id: int, inbound_id: int) -> str:
+    """
+    Use per-inbound email: {tg_id}_{inbound_id}.
+    x-ui validates email uniqueness GLOBALLY across all inbounds,
+    so using just str(tg_id) causes 'Duplicate email' after the first inbound.
+    Per-inbound emails + shared subId = all servers in one subscription link.
+    """
+    return f"{tg_id}_{inbound_id}"
 
 
 def _build_new_client(protocol: str, inbound: dict, tg_id: int, email: str,
@@ -206,20 +213,21 @@ def _build_new_client(protocol: str, inbound: dict, tg_id: int, email: str,
         return base
     else:
         base["id"] = str(uuid.uuid4())
-        # Only set flow for XTLS inbounds — empty string causes N/A in v2rayTun
+        # Only set flow for XTLS — empty string causes N/A in v2rayTun
         if _uses_xtls(inbound):
             base["flow"] = "xtls-rprx-vision"
         return base
 
 
-def _find_client_in_settings(inbound: dict, email: str) -> dict | None:
-    """Search inbound settings JSON for a client with the given email."""
+def _find_client_in_settings(inbound: dict, *emails: str) -> dict | None:
+    """Search inbound settings JSON for a client matching any of the given emails."""
     try:
         settings = inbound.get("settings")
         if isinstance(settings, str):
             settings = json.loads(settings)
+        email_set = set(emails)
         for client in (settings or {}).get("clients", []):
-            if client.get("email") == email:
+            if client.get("email") in email_set:
                 return dict(client)
     except Exception:
         pass
@@ -235,32 +243,22 @@ def _calc_expiry_ms(days: int, extend: bool, current_expiry_ms: int | None) -> i
     return base_ms + days * 24 * 3600 * 1000
 
 
-_ADD_PATHS = [
-    "/panel/api/inbounds/addClient",
-    "/xui/API/inbounds/addClient",
-]
-
-_UPDATE_PATHS = [
-    "/panel/api/inbounds/updateClient/{key}",
-    "/xui/API/inbounds/updateClient/{key}",
-]
+_ADD_PATH = "/panel/api/inbounds/addClient"
+_UPDATE_PATH = "/panel/api/inbounds/updateClient/{key}"
 
 
 async def _do_add_client(inbound_id: int, client: dict) -> tuple[bool, str]:
-    """Try all add paths. Returns (success, error_msg)."""
+    """Add a new client. Returns (success, error_msg)."""
     payload = {"id": inbound_id, "settings": json.dumps({"clients": [client]})}
-    last_msg = ""
-    for path in _ADD_PATHS:
-        data = await _request("POST", path, json=payload)
-        if data and data.get("success"):
-            return True, ""
-        if data is not None:
-            last_msg = data.get("msg", "") or ""
-    return False, last_msg
+    data = await _request("POST", _ADD_PATH, json=payload)
+    if data and data.get("success"):
+        return True, ""
+    msg = (data.get("msg", "") or "") if data else ""
+    return False, msg
 
 
 async def _do_update_client(inbound_id: int, client: dict, protocol: str) -> bool:
-    """Try all update paths using protocol-specific key."""
+    """Update an existing client using protocol-specific key."""
     if protocol in ("hysteria", "hysteria2"):
         key = client.get("auth", client.get("email", ""))
     elif protocol == "shadowsocks":
@@ -268,65 +266,72 @@ async def _do_update_client(inbound_id: int, client: dict, protocol: str) -> boo
     else:
         key = client.get("id", "")
 
-    client_copy = dict(client)
+    if not key:
+        logger.warning(f"updateClient: empty key for protocol={protocol}")
+        return False
+
+    # Strip x-ui internal fields that can cause rejection
+    client_copy = {k: v for k, v in client.items()
+                   if k not in ("created_at", "updated_at")}
+
     payload = {"id": inbound_id, "settings": json.dumps({"clients": [client_copy]})}
-    for tpl in _UPDATE_PATHS:
-        path = tpl.format(key=key)
-        data = await _request("POST", path, json=payload)
-        if data and data.get("success"):
-            return True
-        if data is not None:
-            logger.debug(f"updateClient {path}: {data.get('msg', data)}")
+    path = _UPDATE_PATH.format(key=key)
+    data = await _request("POST", path, json=payload)
+    if data and data.get("success"):
+        return True
+    logger.debug(f"updateClient {path}: {data.get('msg', data) if data else 'no response'}")
     return False
 
 
 async def _add_or_update_client(
-    inbound: dict, protocol: str, tg_id: int, email: str,
+    inbound: dict, protocol: str, tg_id: int,
     sub_id: str, expiry_ms: int, total_bytes: int,
 ) -> bool:
     inbound_id = inbound["id"]
+    # Primary email is per-inbound to avoid x-ui global duplicate constraint
+    email = _make_email(tg_id, inbound_id)
+    # Also search for the old-style global email in case client was added before
+    old_email = str(tg_id)
 
-    # 1. Quick check: client in settings from list response
-    existing = _find_client_in_settings(inbound, email)
+    # 1. Search list response settings (fast path)
+    existing = _find_client_in_settings(inbound, email, old_email)
 
     if existing:
         existing["expiryTime"] = expiry_ms
         existing["totalGB"] = total_bytes
         existing["enable"] = True
         existing["subId"] = sub_id
-        # Remove flow if not XTLS to avoid N/A in clients
-        if not _uses_xtls(inbound) and "flow" in existing:
-            existing.pop("flow", None)
+        existing["email"] = email  # normalize to new format
+        if not _uses_xtls(inbound):
+            existing.pop("flow", None)  # remove empty flow → fixes N/A
         return await _do_update_client(inbound_id, existing, protocol)
 
-    # 2. Try to add as new
+    # 2. Try to add as new client
     new_client = _build_new_client(protocol, inbound, tg_id, email, sub_id, expiry_ms, total_bytes)
     ok, err = await _do_add_client(inbound_id, new_client)
     if ok:
         return True
 
-    # 3. If "Duplicate email", the client exists but wasn't in the list response.
-    #    Fetch the full inbound separately to find and update it.
-    if "duplicate" in err.lower() or "email" in err.lower():
-        logger.info(f"Duplicate email on inbound {inbound_id}, fetching full inbound to update...")
+    # 3. Duplicate email — client exists but not in list response (large inbound).
+    #    Fetch the full inbound to find and update it.
+    if "duplicate" in err.lower() or "email" in err.lower() or "exist" in err.lower():
+        logger.info(f"Inbound {inbound_id}: duplicate email, fetching full inbound...")
         full_inbound = await _get_inbound_full(inbound_id)
         if full_inbound:
-            existing = _find_client_in_settings(full_inbound, email)
+            existing = _find_client_in_settings(full_inbound, email, old_email)
             if existing:
                 existing["expiryTime"] = expiry_ms
                 existing["totalGB"] = total_bytes
                 existing["enable"] = True
                 existing["subId"] = sub_id
-                if not _uses_xtls(inbound) and "flow" in existing:
+                existing["email"] = email  # normalize email
+                if not _uses_xtls(inbound):
                     existing.pop("flow", None)
                 ok = await _do_update_client(inbound_id, existing, protocol)
                 if ok:
                     return True
-        # Last resort: force-update with a new payload using email as key
-        new_client["expiryTime"] = expiry_ms
-        return await _do_update_client(inbound_id, new_client, protocol)
 
-    logger.warning(f"addClient inbound={inbound_id} ({protocol}) failed: {err}")
+    logger.warning(f"add_or_update inbound={inbound_id} ({protocol}) email={email} failed: {err}")
     return False
 
 
@@ -345,10 +350,8 @@ async def add_client_to_all_inbounds(
 
     expiry_ms = _calc_expiry_ms(days, extend, current_expiry_ms)
     total_bytes = TRIAL_GB * 1024 ** 3 if is_trial else 0
-    email = str(tg_id)
 
-    # Process inbounds SEQUENTIALLY — x-ui uses SQLite which doesn't handle
-    # concurrent writes well; parallel requests cause only the first to succeed.
+    # Process SEQUENTIALLY — x-ui uses SQLite; concurrent writes cause failures
     success_count = 0
     for ib in inbounds:
         try:
@@ -356,7 +359,6 @@ async def add_client_to_all_inbounds(
                 inbound=ib,
                 protocol=ib.get("protocol", "vless"),
                 tg_id=tg_id,
-                email=email,
                 sub_id=sub_id,
                 expiry_ms=expiry_ms,
                 total_bytes=total_bytes,
@@ -364,9 +366,8 @@ async def add_client_to_all_inbounds(
             if ok:
                 success_count += 1
             else:
-                logger.warning(f"User {tg_id}: failed for inbound {ib.get('id')} ({ib.get('protocol')})")
-            # Small pause between requests to avoid DB contention in x-ui
-            await asyncio.sleep(0.3)
+                logger.warning(f"User {tg_id}: failed inbound {ib.get('id')} ({ib.get('protocol')})")
+            await asyncio.sleep(0.2)
         except Exception as e:
             logger.error(f"User {tg_id}: exception on inbound {ib.get('id')}: {e}")
 
@@ -375,21 +376,20 @@ async def add_client_to_all_inbounds(
 
 
 async def get_expiry_for_user(tg_id: int) -> int | None:
-    email = str(tg_id)
+    """Get expiry timestamp (ms) from x-ui for a user."""
     inbounds = await get_inbounds()
     for ib in inbounds:
-        client = _find_client_in_settings(ib, email)
-        if client:
+        iid = ib.get("id", 0)
+        # Try new per-inbound email, then old global email format
+        client = _find_client_in_settings(ib, _make_email(tg_id, iid), str(tg_id))
+        if client and client.get("expiryTime"):
             return client.get("expiryTime")
-        # Also check clientStats
-        for stat in (ib.get("clientStats") or []):
-            if stat.get("email") == email:
-                return None  # stats don't have expiry, need full inbound
-    # Try fetching first inbound fully
+    # Fall back to fetching first inbound fully
     if inbounds:
-        full = await _get_inbound_full(inbounds[0]["id"])
+        iid = inbounds[0].get("id", 0)
+        full = await _get_inbound_full(iid)
         if full:
-            client = _find_client_in_settings(full, email)
+            client = _find_client_in_settings(full, _make_email(tg_id, iid), str(tg_id))
             if client:
                 return client.get("expiryTime")
     return None
@@ -397,16 +397,18 @@ async def get_expiry_for_user(tg_id: int) -> int | None:
 
 async def get_all_clients_traffic(tg_id: int) -> list[dict]:
     """Get traffic stats for a user across all inbounds."""
-    email = str(tg_id)
-    traffics = []
     inbounds = await get_inbounds()
+    traffics = []
     for ib in inbounds:
+        iid = ib.get("id", 0)
+        email_new = _make_email(tg_id, iid)
+        email_old = str(tg_id)
         for stat in (ib.get("clientStats") or []):
-            if stat.get("email") == email:
+            if stat.get("email") in (email_new, email_old):
                 traffics.append({
                     "up": stat.get("up", 0),
                     "down": stat.get("down", 0),
-                    "inbound_id": ib.get("id"),
+                    "inbound_id": iid,
                     "remark": ib.get("remark", ""),
                 })
     return traffics
