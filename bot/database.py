@@ -107,9 +107,11 @@ async def mark_trial_used(tg_id: int):
 
 
 def can_use_trial(user: dict) -> tuple[bool, str]:
+    if not user.get("trial_used"):
+        return True, ""
     trial_last = user.get("trial_last_used")
     if not trial_last:
-        return True, ""
+        return False, "Пробный период уже был использован ранее."
     try:
         last_dt = datetime.fromisoformat(trial_last)
         next_allowed = last_dt + timedelta(days=30)
@@ -118,7 +120,7 @@ def can_use_trial(user: dict) -> tuple[bool, str]:
         days_left = (next_allowed - datetime.utcnow()).days + 1
         return False, f"Следующий триал доступен через <b>{days_left} дн.</b>"
     except Exception:
-        return True, ""
+        return False, "Пробный период уже был использован."
 
 
 async def add_payment(tg_id: int, plan: str, stars: int, charge_id: str = "",
@@ -139,6 +141,32 @@ async def count_user_payments(tg_id: int) -> int:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+async def get_payment_history(tg_id: int, limit: int = 5) -> list[dict]:
+    """Get last N payments for a user."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM payments WHERE tg_id = ? ORDER BY paid_at DESC LIMIT ?",
+            (tg_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_public_stats() -> dict:
+    """Stats visible to all users."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            total = (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE subscription_end > datetime('now')"
+        ) as cur:
+            active = (await cur.fetchone())[0]
+        async with db.execute("SELECT SUM(stars) FROM payments WHERE is_gift = 0") as cur:
+            total_stars = (await cur.fetchone())[0] or 0
+    return {"total": total, "active": active, "total_stars": total_stars}
 
 
 async def get_all_users() -> list[dict]:
