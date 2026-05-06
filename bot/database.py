@@ -96,22 +96,31 @@ async def update_subscription(tg_id: int, days: int):
         await db.commit()
 
 
-async def mark_trial_used(tg_id: int):
-    """Permanently mark trial as used. Can only be used once per user."""
+async def mark_trial_used(tg_id: int) -> bool:
+    """Atomically mark trial as used. Returns True if the trial was reserved (wasn't used before)."""
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
+        # This UPDATE will only affect a row if trial_used == 0, making it atomic.
+        cur = await db.execute(
             "UPDATE users SET trial_used = 1, trial_used_at = ? WHERE tg_id = ? AND trial_used = 0",
             (now, tg_id),
         )
         await db.commit()
+        # Check how many rows were changed by the last statement using SQLite changes()
+        async with db.execute("SELECT changes()") as c:
+            row = await c.fetchone()
+            changed = row[0] if row else 0
+        return changed > 0
 
 
-def can_use_trial(user: dict) -> tuple[bool, str]:
-    """Check if user can use trial. Once used, it can NEVER be used again."""
-    if user.get("trial_used"):
-        return False, "Пробный период уже был использован. Он доступен только один раз."
-    return True, ""
+async def unmark_trial_used(tg_id: int):
+    """Revert trial reservation if external provisioning failed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET trial_used = 0, trial_used_at = NULL WHERE tg_id = ?",
+            (tg_id,),
+        )
+        await db.commit()
 
 
 async def add_payment(tg_id: int, plan: str, stars: int, charge_id: str = "",
