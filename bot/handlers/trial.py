@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, F
@@ -11,56 +10,6 @@ import xui_api
 
 logger = logging.getLogger(__name__)
 router = Router()
-
-
-def _bar(pct: int) -> str:
-    filled = int(10 * pct / 100)
-    return "▓" * filled + "░" * (10 - filled)
-
-
-async def _set_progress(msg, label: str, pct: int):
-    try:
-        await msg.edit_text(
-            f"⏳ <b>{label}</b>\n\n{_bar(pct)} {pct}%",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-
-
-async def _animate(msg, label: str, start: int, end: int, stop_event: asyncio.Event):
-    pct = start
-    direction = 1
-    while not stop_event.is_set():
-        await _set_progress(msg, label, pct)
-        await asyncio.sleep(0.7)
-        pct += direction * 3
-        if pct >= end:
-            pct = end
-            direction = -1
-        elif pct <= start:
-            pct = start
-            direction = 1
-
-
-async def _run_with_bar(msg, coro, label: str, start: int = 5, end: int = 90):
-    stop = asyncio.Event()
-    result_holder = [False]
-    exc_holder: list = []
-
-    async def _worker():
-        try:
-            result_holder[0] = await coro
-        except Exception as e:
-            exc_holder.append(e)
-        finally:
-            stop.set()
-
-    await asyncio.gather(_animate(msg, label, start, end, stop), _worker())
-
-    if exc_holder:
-        raise exc_holder[0]
-    return result_holder[0]
 
 
 @router.message(F.text == "🎁 Пробный период")
@@ -82,11 +31,7 @@ async def cmd_trial(message: Message):
         )
         return
 
-    proc_msg = await message.answer(
-        f"⏳ <b>Подготовка...</b>\n\n{_bar(0)} 0%",
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode="HTML",
-    )
+    proc_msg = await message.answer("⏳ Подготовка...", reply_markup=ReplyKeyboardRemove())
 
     reserved = await mark_trial_used(tg_id)
     if not reserved:
@@ -94,23 +39,17 @@ async def cmd_trial(message: Message):
         return
 
     try:
-        sub_id = user["sub_id"]
+        await proc_msg.edit_text("⏳ Идёт создание аккаунта VPN...")
 
-        ok = await _run_with_bar(
-            proc_msg,
-            xui_api.add_client_to_all_inbounds(
-                tg_id=tg_id,
-                sub_id=sub_id,
-                days=TRIAL_DAYS,
-                is_trial=True,
-            ),
-            label="Создание VPN-аккаунта",
-            start=10,
-            end=90,
+        sub_id = user["sub_id"]
+        ok = await xui_api.add_client_to_all_inbounds(
+            tg_id=tg_id,
+            sub_id=sub_id,
+            days=TRIAL_DAYS,
+            is_trial=True,
         )
 
-        await _set_progress(proc_msg, "Применение настроек...", 95)
-        await asyncio.sleep(0.4)
+        await proc_msg.edit_text("⏳ Применение настроек на сервере...")
 
         if ok:
             await update_subscription(tg_id, TRIAL_DAYS)
