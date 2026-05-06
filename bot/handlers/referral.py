@@ -9,7 +9,7 @@ from database import get_user, create_user, get_referral_stats
 logger = logging.getLogger(__name__)
 router = Router()
 
-REFERRAL_BONUS_DAYS = 7  # days awarded to referrer per first-paid referral
+REFERRAL_BONUS_DAYS = 7
 
 
 def _referral_link(tg_id: int) -> str:
@@ -19,12 +19,12 @@ def _referral_link(tg_id: int) -> str:
 def _ref_keyboard(tg_id: int) -> InlineKeyboardMarkup:
     link = _referral_link(tg_id)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться ссылкой", switch_inline_query=f"ref_{tg_id}")],
-        [InlineKeyboardButton(text="🔗 Скопировать ссылку", url=link)],
+        [InlineKeyboardButton(text="📤 Поделиться с другом", switch_inline_query=f"Присоединяйся к VPN сервису по моей ссылке: {link}")],
+        [InlineKeyboardButton(text="🔗 Моя реферальная ссылка", url=link)],
     ])
 
 
-@router.message(F.text == "👥 Реферальная программа")
+@router.message(F.text.in_({"👥 Рефералы", "👥 Реферальная программа"}))
 @router.message(Command("ref"))
 async def cmd_referral(message: Message):
     tg_id = message.from_user.id
@@ -34,15 +34,19 @@ async def cmd_referral(message: Message):
 
     stats = await get_referral_stats(tg_id)
     link = _referral_link(tg_id)
+    pending = stats["total"] - stats["rewarded"]
 
     text = (
         f"👥 <b>Реферальная программа</b>\n\n"
-        f"Приглашай друзей — получай бонусные дни!\n\n"
-        f"🎁 <b>Твой бонус:</b> +{REFERRAL_BONUS_DAYS} дней за каждого друга, "
-        f"который совершит <b>первую оплату</b>.\n\n"
+        f"Приглашай друзей и получай бонусы!\n\n"
+        f"💡 <b>Как это работает:</b>\n"
+        f"1. Поделись своей ссылкой с другом\n"
+        f"2. Друг регистрируется и делает <b>первую оплату</b>\n"
+        f"3. Тебе автоматически начисляется <b>+{REFERRAL_BONUS_DAYS} дней</b>\n\n"
         f"📊 <b>Твоя статистика:</b>\n"
-        f"• Приглашено: <b>{stats['total']}</b>\n"
-        f"• Вознаграждено: <b>{stats['rewarded']}</b>\n\n"
+        f"• Приглашено друзей: <b>{stats['total']}</b>\n"
+        f"• Получено бонусов: <b>{stats['rewarded']}</b> (+{stats['rewarded'] * REFERRAL_BONUS_DAYS} дней)\n"
+        f"• Ожидают оплаты: <b>{pending}</b>\n\n"
         f"🔗 <b>Твоя реферальная ссылка:</b>\n"
         f"<code>{link}</code>"
     )
