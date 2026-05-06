@@ -105,11 +105,9 @@ async def mark_trial_used(tg_id: int) -> bool:
             "UPDATE users SET trial_used = 1, trial_used_at = ? WHERE tg_id = ? AND trial_used = 0",
             (now, tg_id),
         )
+        # Read rowcount BEFORE commit — aiosqlite resets changes() after commit
+        changed = cur.rowcount
         await db.commit()
-        # Check how many rows were changed by the last statement using SQLite changes()
-        async with db.execute("SELECT changes()") as c:
-            row = await c.fetchone()
-            changed = row[0] if row else 0
         return changed > 0
 
 
