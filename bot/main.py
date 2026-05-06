@@ -11,6 +11,7 @@ from config import BOT_TOKEN, ADMIN_ID
 from database import init_db, get_user, create_user, add_referral
 from handlers import start, buy, trial, profile, admin
 from handlers import referral as referral_handler
+from handlers import subscription as subscription_handler
 from middlewares import ChannelSubscriptionMiddleware
 from reminders import reminder_loop
 import xui_api
@@ -69,7 +70,7 @@ async def main():
             try:
                 referrer_id = int(args[4:])
                 if referrer_id == tg_id:
-                    referrer_id = None  # can't refer yourself
+                    referrer_id = None
             except ValueError:
                 referrer_id = None
 
@@ -88,7 +89,6 @@ async def main():
         name = message.from_user.first_name or "друг"
 
         if referrer_id and user.get("referred_by") is None:
-            # Newly referred
             await message.answer(
                 f"👋 Привет, <b>{name}</b>!\n\n"
                 f"Ты пришёл по реферальной ссылке 🎉\n"
@@ -114,6 +114,7 @@ async def main():
     dp.include_router(buy.router)
     dp.include_router(trial.router)
     dp.include_router(profile.router)
+    dp.include_router(subscription_handler.router)
     dp.include_router(referral_handler.router)
 
     async def on_startup():
