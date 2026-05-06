@@ -56,7 +56,7 @@ async def cmd_trial(message: Message):
             f"• <b>Android:</b> v2rayNG, Hiddify\n"
             f"• <b>iOS:</b> Streisand, Shadowrocket\n"
             f"• <b>Windows/Mac:</b> Hiddify, v2rayN\n\n"
-            f"🔁 Новый триал доступен через 30 дней.\n"
+            f"⚠️ <b>Пробный период можно использовать только один раз!</b>\n"
             f"После окончания купи подписку 🛒",
             parse_mode="HTML",
         )
