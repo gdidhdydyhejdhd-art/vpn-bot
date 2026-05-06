@@ -5,9 +5,9 @@ from config import PLANS, ADMIN_ID
 def main_menu(tg_id: int = 0) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="🎁 Пробный период")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="👥 Рефералы")],
-        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📱 Инструкция")],
-        [KeyboardButton(text="📞 Поддержка")],
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💼 Подписка")],
+        [KeyboardButton(text="👥 Рефералы"), KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="📱 Инструкция"), KeyboardButton(text="📞 Поддержка")],
     ]
     if tg_id == ADMIN_ID:
         rows.append([KeyboardButton(text="🔧 Админ-панель")])
@@ -40,6 +40,26 @@ def profile_menu(sub_url: str | None = None) -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="💳 История платежей", callback_data="profile:payments")])
     buttons.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="profile:refresh")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def subscription_menu(is_frozen: bool = False, has_sub: bool = False) -> InlineKeyboardMarkup:
+    buttons = []
+    if is_frozen:
+        buttons.append([InlineKeyboardButton(text="🔓 Разморозить подписку", callback_data="sub:unfreeze")])
+    elif has_sub:
+        buttons.append([InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="sub:extend")])
+        buttons.append([InlineKeyboardButton(text="🧊 Заморозить подписку", callback_data="sub:freeze")])
+        buttons.append([InlineKeyboardButton(text="🗑 Удалить подписку", callback_data="sub:cancel_confirm")])
+    else:
+        buttons.append([InlineKeyboardButton(text="🛒 Купить подписку", callback_data="sub:extend")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def cancel_confirm_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="sub:cancel_do")],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="sub:back")],
+    ])
 
 
 def admin_menu() -> InlineKeyboardMarkup:
