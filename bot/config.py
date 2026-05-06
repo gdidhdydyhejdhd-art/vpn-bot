@@ -12,6 +12,8 @@ ADMIN_USERNAME: str = "rl_highest"
 
 DB_PATH: str = "bot/vpn_bot.db"
 
+ACCESS_PIN: str = os.environ.get("ACCESS_PIN", "")
+
 PLANS: dict = {
     "7days": {"stars": 50, "days": 7, "label": "7 дней — 50 ⭐"},
     "1month": {"stars": 100, "days": 30, "label": "1 месяц — 100 ⭐"},
