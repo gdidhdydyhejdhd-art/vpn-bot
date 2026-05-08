@@ -7,7 +7,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from config import ADMIN_ID, ACCESS_PIN
 from database import (
     get_user, create_user, has_active_subscription,
-    set_channel_verified, set_pin_verified, set_user_locked,
+    set_channel_verified, reset_channel_verified_user,
+    set_pin_verified, set_user_locked,
 )
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 CHANNEL_USERNAME = "vpss_official"
 CHANNEL_URL = f"https://t.me/{CHANNEL_USERNAME}"
 
-_channel_unavailable: bool = False
 _admin_notified: bool = False
 
 
@@ -44,25 +44,35 @@ async def _notify_admin_no_rights(bot) -> None:
         await bot.send_message(
             ADMIN_ID,
             f"⚠️ <b>Бот не может проверять подписку на канал!</b>\n\n"
-            f"Добавь <b>@Vpss_robot</b> как администратора канала <b>@{CHANNEL_USERNAME}</b>.\n\n"
-            f"Пока бот не является администратором, пользователи верифицируются "
-            f"только нажатием кнопки «Я подписался».",
+            f"Добавь бота как администратора канала @{CHANNEL_USERNAME}.\n\n"
+            f"Пока бот не администратор — подписка не проверяется вживую, "
+            f"пользователи верифицируются только нажатием «Я подписался».",
             parse_mode="HTML",
         )
     except Exception:
         pass
 
 
-async def _is_subscribed(bot, user_id: int) -> tuple[bool, bool]:
-    """Returns (is_subscribed, can_check). can_check=False means bot has no rights."""
+async def _check_channel_membership(bot, user_id: int) -> tuple[bool, bool]:
+    """
+    Returns (is_subscribed, can_check).
+    can_check=False means bot has no admin rights to verify.
+    Always makes a live API call — no caching.
+    """
     try:
-        member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
-        return member.status in ("member", "administrator", "creator", "restricted"), True
+        member = await bot.get_chat_member(
+            chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id
+        )
+        status = member.status
+        # "left" and "kicked" mean not subscribed
+        subscribed = status in ("member", "administrator", "creator", "restricted")
+        return subscribed, True
     except Exception as e:
         err = str(e).lower()
-        if "inaccessible" in err or "not enough rights" in err or "administrator" in err or "chat not found" in err:
+        if any(k in err for k in ("not enough rights", "administrator", "inaccessible", "chat not found", "forbidden")):
             return False, False
-        logger.warning(f"Channel check transient error for {user_id}: {e}")
+        # Transient error — treat as can't check
+        logger.warning(f"Channel check error for {user_id}: {e}")
         return False, False
 
 
@@ -112,13 +122,11 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
 
         # ── Per-user lock check ──────────────────────────────────────────────
         if user_db.get("is_locked") and user_db.get("user_pin"):
-            # Allow PIN pad callbacks through to the handler
             if isinstance(event, CallbackQuery):
                 if event.data.startswith("pin:") or event.data.startswith("pin_del:"):
                     return await handler(event, data)
                 await event.answer("🔒 Введи PIN-код на экране", show_alert=True)
                 return
-            # For any message while locked — show PIN pad again
             if isinstance(event, Message):
                 from keyboards import pin_keyboard
                 pin_len = len(user_db["user_pin"])
@@ -131,68 +139,84 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                 return
             return
 
-        # ── Channel subscription check ───────────────────────────────────────
-        # Skip check if already verified or has active subscription
-        if user_db.get("channel_verified") or await has_active_subscription(tg_id):
+        # ── Paying users always pass (no channel check needed) ───────────────
+        if await has_active_subscription(tg_id):
             return await handler(event, data)
 
         # ── Handle "✅ Я подписался" button ──────────────────────────────────
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
-            try:
-                subscribed, can_check = await _is_subscribed(bot, tg_id)
+            subscribed, can_check = await _check_channel_membership(bot, tg_id)
 
-                if not can_check:
-                    # Bot has no rights to check — trust the user's click
-                    await _notify_admin_no_rights(bot)
-                    subscribed = True
+            if not can_check:
+                # Bot has no rights — trust the button click, notify admin once
+                await _notify_admin_no_rights(bot)
+                subscribed = True
 
-                if subscribed:
-                    await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
-                    await set_channel_verified(tg_id)
-                    from keyboards import main_menu
-                    has_pin = bool(user_db.get("user_pin"))
-                    name = user.first_name or "друг"
-                    await event.message.answer(
-                        f"👋 <b>Добро пожаловать, {name}!</b>\n\n"
-                        f"Выбери действие:\n\n"
-                        f"<i>Если кнопки не отобразились — напишите /start</i>",
-                        reply_markup=main_menu(tg_id, has_pin=has_pin),
-                        parse_mode="HTML",
-                    )
-                else:
-                    await event.answer(
-                        f"❌ Ты не подписан на @{CHANNEL_USERNAME}. Подпишись и попробуй снова.",
-                        show_alert=True,
-                    )
-            except Exception as e:
-                logger.error(f"check_subscription error for {tg_id}: {e}")
+            if subscribed:
+                await set_channel_verified(tg_id)
+                await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
+                from keyboards import main_menu
+                has_pin = bool(user_db.get("user_pin"))
+                name = user.first_name or "друг"
+                await event.message.answer(
+                    f"👋 <b>Добро пожаловать, {name}!</b>\n\n"
+                    f"Выбери действие:\n\n"
+                    f"<i>Если кнопки не отобразились — напишите /start</i>",
+                    reply_markup=main_menu(tg_id, has_pin=has_pin),
+                    parse_mode="HTML",
+                )
+            else:
+                await event.answer(
+                    f"❌ Ты ещё не подписан на @{CHANNEL_USERNAME}.\n"
+                    f"Подпишись и нажми кнопку снова!",
+                    show_alert=True,
+                )
+            return
+
+        # ── Live channel membership check for every message ──────────────────
+        subscribed, can_check = await _check_channel_membership(bot, tg_id)
+
+        if not can_check:
+            # Bot can't verify — notify admin and fall back to cached flag
+            await _notify_admin_no_rights(bot)
+            if user_db.get("channel_verified"):
+                # Previously verified via button — allow through
+                return await handler(event, data)
+            # Never verified — show subscription prompt
+            if isinstance(event, Message):
+                await event.answer(_channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML")
+            elif isinstance(event, CallbackQuery):
+                await event.answer(f"Сначала подпишись на @{CHANNEL_USERNAME}!", show_alert=True)
                 try:
-                    await event.answer("⚠️ Ошибка проверки. Попробуй ещё раз.", show_alert=True)
+                    await event.message.answer(
+                        _channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML"
+                    )
                 except Exception:
                     pass
             return
 
-        # ── Regular message/callback — must check subscription ────────────────
-        subscribed, can_check = await _is_subscribed(bot, tg_id)
-
-        if can_check and subscribed:
-            # Verified via real API check
-            await set_channel_verified(tg_id)
+        if subscribed:
+            # User IS subscribed — update cache and allow
+            if not user_db.get("channel_verified"):
+                await set_channel_verified(tg_id)
             return await handler(event, data)
-
-        if not can_check:
-            # Bot has no rights — notify admin but DO NOT auto-verify
-            # User must press "Я подписался" to get access
-            await _notify_admin_no_rights(bot)
-
-        # Block — show subscription prompt
-        if isinstance(event, Message):
-            await event.answer(_channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML")
-        elif isinstance(event, CallbackQuery):
-            await event.answer(f"Сначала подпишись на @{CHANNEL_USERNAME}!", show_alert=True)
-            try:
-                await event.message.answer(
-                    _channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML"
+        else:
+            # User is NOT subscribed (or was subscribed but unsubscribed)
+            if user_db.get("channel_verified"):
+                # Had cached verification — clear it since they unsubscribed
+                await reset_channel_verified_user(tg_id)
+            # Block and show subscription prompt
+            if isinstance(event, Message):
+                await event.answer(_channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML")
+            elif isinstance(event, CallbackQuery):
+                await event.answer(
+                    f"❌ Ты отписался от @{CHANNEL_USERNAME}! Подпишись снова.",
+                    show_alert=True,
                 )
-            except Exception:
-                pass
+                try:
+                    await event.message.answer(
+                        _channel_text(), reply_markup=_channel_keyboard(), parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+            return
