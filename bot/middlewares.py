@@ -48,7 +48,7 @@ async def _is_subscribed(bot, user_id: int) -> tuple[bool, bool]:
     try:
         member = await bot.get_chat_member(chat_id=f"@{CHANNEL_USERNAME}", user_id=user_id)
         _channel_unavailable = False
-        return member.status in ("member", "administrator", "creator"), True
+        return member.status in ("member", "administrator", "creator", "restricted"), True
     except Exception as e:
         err = str(e).lower()
         if "inaccessible" in err or "not enough rights" in err or "administrator" in err:
@@ -109,27 +109,35 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
 
         # Handle "✅ Я подписался" button
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
-            subscribed, can_check = await _is_subscribed(bot, tg_id)
+            try:
+                subscribed, can_check = await _is_subscribed(bot, tg_id)
 
-            if not can_check:
-                await _notify_admin_no_rights(bot)
-                subscribed = True  # Trust-based fallback
+                if not can_check:
+                    await _notify_admin_no_rights(bot)
+                    subscribed = True  # Trust-based fallback
 
-            if subscribed:
-                await set_channel_verified(tg_id)
-                await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
-                from keyboards import main_menu
-                name = user.first_name or "друг"
-                await event.message.answer(
-                    f"👋 <b>Добро пожаловать, {name}!</b>\n\nВыбери действие:",
-                    reply_markup=main_menu(tg_id),
-                    parse_mode="HTML",
-                )
-            else:
-                await event.answer(
-                    f"❌ Подпишись на @{CHANNEL_USERNAME} и попробуй снова.",
-                    show_alert=True,
-                )
+                if subscribed:
+                    # Answer the callback FIRST so Telegram removes the loading indicator
+                    await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
+                    await set_channel_verified(tg_id)
+                    from keyboards import main_menu
+                    name = user.first_name or "друг"
+                    await event.message.answer(
+                        f"👋 <b>Добро пожаловать, {name}!</b>\n\nВыбери действие:",
+                        reply_markup=main_menu(tg_id),
+                        parse_mode="HTML",
+                    )
+                else:
+                    await event.answer(
+                        f"❌ Подпишись на @{CHANNEL_USERNAME} и попробуй снова.",
+                        show_alert=True,
+                    )
+            except Exception as e:
+                logger.error(f"check_subscription error for {tg_id}: {e}")
+                try:
+                    await event.answer("⚠️ Ошибка. Попробуй ещё раз.", show_alert=True)
+                except Exception:
+                    pass
             return
 
         # Regular message — check subscription to channel
