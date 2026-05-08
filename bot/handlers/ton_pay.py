@@ -29,7 +29,7 @@ async def get_ton_price_usd() -> float:
                 return float(data["the-open-network"]["usd"])
     except Exception as e:
         logger.warning(f"TON price fetch failed: {e}")
-        return 5.0  # fallback price
+        return 5.0  # fallback
 
 
 def calc_ton_amount(stars: int, ton_price_usd: float) -> float:
@@ -65,7 +65,6 @@ async def check_ton_payment_received(expected_ton: float, comment: str) -> bool:
                         continue
                     if comment not in msg_text:
                         continue
-                    # 15% tolerance to cover price fluctuation
                     if value_ton > 0 and abs(value_ton - expected_ton) / max(expected_ton, 0.001) <= 0.15:
                         return True
         return False
@@ -91,7 +90,9 @@ async def on_ton_plan_select(call: CallbackQuery):
     ton_price = await get_ton_price_usd()
     ton_amount = calc_ton_amount(plan["stars"], ton_price)
     nanoton = int(ton_amount * 1_000_000_000)
-    ton_link = f"ton://transfer/{TON_WALLET}?amount={nanoton}&text={comment}"
+
+    # Use Tonkeeper web link — works on all devices without needing ton:// scheme
+    ton_link = f"https://app.tonkeeper.com/transfer/{TON_WALLET}?amount={nanoton}&text={comment}"
 
     try:
         await loading_msg.delete()
@@ -108,17 +109,17 @@ async def on_ton_plan_select(call: CallbackQuery):
         f"💳 Цена в Stars: {stars_price} ⭐ (≈ ${stars_usd})\n"
         f"💎 Цена в TON: <b>{ton_amount} TON</b> (≈ ${ton_usd}) — <b>скидка 5%!</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📬 <b>Кошелёк для перевода:</b>\n"
+        f"📬 <b>Кошелёк:</b>\n"
         f"<code>{TON_WALLET}</code>\n\n"
         f"💬 <b>Комментарий (обязательно!):</b>\n"
         f"<code>{comment}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"<b>Как оплатить:</b>\n"
-        f"1️⃣ Нажми «💎 Открыть TON-кошелёк» — данные заполнятся автоматически\n"
-        f"2️⃣ Или переведи вручную: <b>{ton_amount} TON</b> с комментарием <code>{comment}</code>\n"
+        f"1️⃣ Нажми «💎 Открыть Tonkeeper» — данные заполнятся автоматически\n"
+        f"2️⃣ Или перечисли вручную: <b>{ton_amount} TON</b> с комментарием <code>{comment}</code>\n"
         f"3️⃣ После отправки нажми «✅ Проверить оплату»\n\n"
         f"⚠️ <b>Без комментария оплата не определится!</b>\n"
-        f"💡 Курс TON: ${ton_price:.2f} | Проверка работает до 90 минут после оплаты",
+        f"💡 Курс TON: ${ton_price:.2f}",
         parse_mode="HTML",
         reply_markup=ton_payment_keyboard(plan_key, ton_amount, comment, ton_link),
     )
@@ -147,8 +148,7 @@ async def on_ton_check(call: CallbackQuery):
 
     await call.answer("🔍 Проверяю блокчейн...")
     check_msg = await call.message.answer(
-        "🔍 <b>Проверяю поступление платежа в блокчейне TON...</b>\n"
-        "<i>Это может занять несколько секунд.</i>",
+        "🔍 <b>Проверяю поступление в блокчейне TON...</b>\n<i>Это займёт несколько секунд.</i>",
         parse_mode="HTML",
     )
 
@@ -192,12 +192,12 @@ async def on_ton_check(call: CallbackQuery):
             )
         else:
             await call.message.answer(
-                f"⚠️ Оплата найдена, но ошибка при активации подписки.\n"
+                f"⚠️ Оплата найдена, но ошибка при активации.\n"
                 f"Обратитесь к @rl_highest с ID: <code>{tg_id}</code>",
                 parse_mode="HTML",
             )
 
-        # Referral bonus
+        # Referral bonus on first payment
         if previous_payments == 0:
             referral = await get_unrewarded_referral(tg_id)
             if referral:
@@ -219,7 +219,7 @@ async def on_ton_check(call: CallbackQuery):
                             referrer_id,
                             f"🎉 <b>Реферальный бонус!</b>\n\n"
                             f"Твой друг совершил первую покупку.\n"
-                            f"Тебе начислено <b>+{REFERRAL_BONUS_DAYS} дней</b> к подписке! 🚀",
+                            f"Тебе начислено <b>+{REFERRAL_BONUS_DAYS} дней</b>! 🚀",
                             parse_mode="HTML",
                         )
                     except Exception:
@@ -233,7 +233,7 @@ async def on_ton_check(call: CallbackQuery):
                 f"👤 ID: <code>{tg_id}</code>\n"
                 f"👤 Ник: @{call.from_user.username or '-'}\n"
                 f"📦 Тариф: {plan['label']}\n"
-                f"💰 TON: {ton_amount:.2f}",
+                f"💰 Сумма: {ton_amount:.2f} TON",
                 parse_mode="HTML",
             )
         except Exception:
@@ -241,7 +241,7 @@ async def on_ton_check(call: CallbackQuery):
 
     else:
         nanoton = int(ton_amount * 1_000_000_000)
-        ton_link = f"ton://transfer/{TON_WALLET}?amount={nanoton}&text={comment}"
+        ton_link = f"https://app.tonkeeper.com/transfer/{TON_WALLET}?amount={nanoton}&text={comment}"
         await call.message.answer(
             f"❌ <b>Платёж не найден.</b>\n\n"
             f"Убедись, что:\n"
@@ -249,7 +249,7 @@ async def on_ton_check(call: CallbackQuery):
             f"• Указал комментарий: <code>{comment}</code>\n"
             f"• Прошло минимум 1-2 минуты после отправки\n\n"
             f"Попробуй снова через пару минут.\n"
-            f"Если проблема остаётся — напиши @rl_highest и укажи свой ID: <code>{tg_id}</code>",
+            f"Проблемы? Напиши @rl_highest, укажи ID: <code>{tg_id}</code>",
             parse_mode="HTML",
             reply_markup=ton_payment_keyboard(plan_key, ton_amount, comment, ton_link),
         )
