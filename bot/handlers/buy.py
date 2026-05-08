@@ -135,10 +135,10 @@ async def on_successful_payment(message: Message):
             f"✅ <b>Подписка активирована!</b>\n\n"
             f"📦 Тариф: <b>{plan['label']}</b>\n"
             f"🔗 Ссылка для подключения:\n<code>{sub_url}</code>\n\n"
-            f"💡 Импортируй эту ссылку в любой VLESS-клиент:\n"
-            f"• <b>Android:</b> v2rayNG, Hiddify\n"
-            f"• <b>iOS:</b> Streisand, Shadowrocket\n"
-            f"• <b>Windows/Mac:</b> Hiddify, v2rayN",
+            f"💡 Импортируй эту ссылку в любой VLESS-клиент:\n\n"
+            f"🤖 <b>Android:</b> v2rayNG, Hiddify, Happ, INCY VPN\n"
+            f"🍎 <b>iOS:</b> Streisand, Shadowrocket, V2RayTun, Happ, FoXray\n"
+            f"🖥 <b>Windows/Mac:</b> Hiddify, v2rayN, NekoRay",
             parse_mode="HTML",
         )
     else:
