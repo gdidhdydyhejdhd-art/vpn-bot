@@ -19,6 +19,7 @@ async def cmd_start(message: Message):
     user = await get_user(tg_id)
     if not user:
         await create_user(tg_id, username, first_name)
+        user = await get_user(tg_id)
         welcome = (
             f"👋 Привет, <b>{first_name}</b>!\n\n"
             "Добро пожаловать в <b>VPN сервис</b>.\n\n"
@@ -33,7 +34,8 @@ async def cmd_start(message: Message):
             "Выбери действие:"
         )
 
-    await message.answer(welcome, reply_markup=main_menu(tg_id), parse_mode="HTML")
+    has_pin = bool(user and user.get("user_pin"))
+    await message.answer(welcome, reply_markup=main_menu(tg_id, has_pin=has_pin), parse_mode="HTML")
 
 
 @router.message(F.text == "📞 Поддержка")
