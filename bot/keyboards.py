@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from config import PLANS, ADMIN_ID
 
 
@@ -14,6 +14,31 @@ def main_menu(tg_id: int = 0, has_pin: bool = False) -> ReplyKeyboardMarkup:
     if tg_id == ADMIN_ID:
         rows.append([KeyboardButton(text="🔧 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def pin_keyboard(current: str = "", pin_len: int = 4) -> InlineKeyboardMarkup:
+    """Numeric PIN pad inline keyboard."""
+    entered = len(current)
+    remaining = max(0, pin_len - entered)
+    if entered == 0:
+        display = "○" * pin_len
+    else:
+        display = "●" * entered + "○" * remaining
+
+    def btn(digit: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(text=digit, callback_data=f"pin:{current}{digit}")
+
+    def del_btn() -> InlineKeyboardButton:
+        new = current[:-1] if current else ""
+        return InlineKeyboardButton(text="⌫", callback_data=f"pin_del:{current}")
+
+    rows = [
+        [btn("1"), btn("2"), btn("3")],
+        [btn("4"), btn("5"), btn("6")],
+        [btn("7"), btn("8"), btn("9")],
+        [del_btn(), btn("0")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def settings_menu(has_pin: bool = False) -> InlineKeyboardMarkup:
@@ -52,7 +77,7 @@ def confirm_buy(plan_key: str) -> InlineKeyboardMarkup:
 def ton_payment_keyboard(plan_key: str, ton_amount: float, comment: str, ton_link: str) -> InlineKeyboardMarkup:
     cb = f"ton_check:{plan_key}:{ton_amount:.2f}:{comment}"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Открыть TON-кошелёк", url=ton_link)],
+        [InlineKeyboardButton(text="💎 Открыть Tonkeeper", url=ton_link)],
         [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=cb)],
         [InlineKeyboardButton(text="◀️ Отмена", callback_data=f"buy:{plan_key}")],
     ])
