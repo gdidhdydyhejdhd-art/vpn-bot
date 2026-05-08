@@ -146,6 +146,20 @@ async def set_channel_verified(tg_id: int):
         await db.commit()
 
 
+async def reset_channel_verified_all():
+    """Reset channel_verified=0 for all users (use to force re-verification)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET channel_verified = 0")
+        await db.commit()
+
+
+async def reset_channel_verified_user(tg_id: int):
+    """Reset channel_verified=0 for a specific user."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET channel_verified = 0 WHERE tg_id = ?", (tg_id,))
+        await db.commit()
+
+
 async def set_pin_verified(tg_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET pin_verified = 1 WHERE tg_id = ?", (tg_id,))
@@ -357,8 +371,6 @@ def can_use_trial(user: dict) -> tuple[bool, str]:
     return True, ""
 
 
-# ── Per-user PIN / Lock ──────────────────────────────────────────────────────
-
 async def set_user_pin(tg_id: int, pin: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -385,8 +397,6 @@ async def set_user_locked(tg_id: int, locked: bool):
         )
         await db.commit()
 
-
-# ── TON payments ─────────────────────────────────────────────────────────────
 
 async def create_ton_payment(tg_id: int, plan: str, expected_ton: float, comment: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
