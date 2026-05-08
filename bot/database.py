@@ -22,7 +22,9 @@ async def init_db():
                 channel_verified INTEGER DEFAULT 0,
                 pin_verified INTEGER DEFAULT 0,
                 frozen_until TEXT,
-                frozen_at TEXT
+                frozen_at TEXT,
+                user_pin TEXT DEFAULT NULL,
+                is_locked INTEGER DEFAULT 0
             )
         """)
         await db.execute("""
@@ -46,15 +48,29 @@ async def init_db():
                 rewarded INTEGER DEFAULT 0
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ton_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tg_id INTEGER NOT NULL,
+                plan TEXT NOT NULL,
+                expected_ton REAL NOT NULL,
+                comment TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now')),
+                confirmed_at TEXT
+            )
+        """)
         for col, definition in [
-            ("trial_used_at", "TEXT"),
-            ("last_reminder", "TEXT"),
-            ("is_banned", "INTEGER DEFAULT 0"),
-            ("referred_by", "INTEGER DEFAULT NULL"),
-            ("channel_verified", "INTEGER DEFAULT 0"),
-            ("pin_verified", "INTEGER DEFAULT 0"),
-            ("frozen_until", "TEXT"),
-            ("frozen_at", "TEXT"),
+            ("trial_used_at",   "TEXT"),
+            ("last_reminder",   "TEXT"),
+            ("is_banned",       "INTEGER DEFAULT 0"),
+            ("referred_by",     "INTEGER DEFAULT NULL"),
+            ("channel_verified","INTEGER DEFAULT 0"),
+            ("pin_verified",    "INTEGER DEFAULT 0"),
+            ("frozen_until",    "TEXT"),
+            ("frozen_at",       "TEXT"),
+            ("user_pin",        "TEXT DEFAULT NULL"),
+            ("is_locked",       "INTEGER DEFAULT 0"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
@@ -104,7 +120,6 @@ async def update_subscription(tg_id: int, days: int):
 
 
 async def mark_trial_used(tg_id: int) -> bool:
-    """Atomically mark trial as used. Returns True if the trial was reserved (wasn't used before)."""
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -117,7 +132,6 @@ async def mark_trial_used(tg_id: int) -> bool:
 
 
 async def unmark_trial_used(tg_id: int):
-    """Revert trial reservation if external provisioning failed."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET trial_used = 0, trial_used_at = NULL WHERE tg_id = ?",
@@ -139,7 +153,6 @@ async def set_pin_verified(tg_id: int):
 
 
 async def freeze_subscription(tg_id: int) -> bool:
-    """Freeze subscription: save end date, clear active subscription."""
     user = await get_user(tg_id)
     if not user or not user.get("subscription_end"):
         return False
@@ -154,7 +167,6 @@ async def freeze_subscription(tg_id: int) -> bool:
 
 
 async def unfreeze_subscription(tg_id: int) -> tuple[bool, datetime | None]:
-    """Unfreeze: restore subscription extended by the freeze duration."""
     user = await get_user(tg_id)
     if not user or not user.get("frozen_until"):
         return False, None
@@ -175,7 +187,6 @@ async def unfreeze_subscription(tg_id: int) -> tuple[bool, datetime | None]:
 
 
 async def cancel_subscription(tg_id: int):
-    """Cancel subscription: clear from DB."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "UPDATE users SET subscription_end = NULL, frozen_until = NULL, frozen_at = NULL WHERE tg_id = ?",
@@ -252,11 +263,8 @@ async def get_stats() -> dict:
         async with db.execute("SELECT COUNT(*) FROM referrals WHERE rewarded = 1") as cur:
             rewarded_refs = (await cur.fetchone())[0]
         return {
-            "total": total,
-            "trials": trials,
-            "active": active,
-            "total_stars": total_stars,
-            "total_refs": total_refs,
+            "total": total, "trials": trials, "active": active,
+            "total_stars": total_stars, "total_refs": total_refs,
             "rewarded_refs": rewarded_refs,
         }
 
@@ -342,9 +350,70 @@ async def mark_referral_rewarded(referral_id: int):
 
 
 def can_use_trial(user: dict) -> tuple[bool, str]:
-    """Check if a user is allowed to use the trial period."""
     if user.get("is_banned"):
         return False, "Ваш аккаунт заблокирован."
     if user.get("trial_used"):
         return False, "Вы уже использовали пробный период."
     return True, ""
+
+
+# ── Per-user PIN / Lock ──────────────────────────────────────────────────────
+
+async def set_user_pin(tg_id: int, pin: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET user_pin = ?, is_locked = 0 WHERE tg_id = ?",
+            (pin, tg_id),
+        )
+        await db.commit()
+
+
+async def remove_user_pin(tg_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET user_pin = NULL, is_locked = 0 WHERE tg_id = ?",
+            (tg_id,),
+        )
+        await db.commit()
+
+
+async def set_user_locked(tg_id: int, locked: bool):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET is_locked = ? WHERE tg_id = ?",
+            (1 if locked else 0, tg_id),
+        )
+        await db.commit()
+
+
+# ── TON payments ─────────────────────────────────────────────────────────────
+
+async def create_ton_payment(tg_id: int, plan: str, expected_ton: float, comment: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO ton_payments (tg_id, plan, expected_ton, comment) VALUES (?, ?, ?, ?)",
+            (tg_id, plan, expected_ton, comment),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_pending_ton_payment(tg_id: int) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ton_payments WHERE tg_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+            (tg_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def confirm_ton_payment(payment_id: int):
+    now = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ton_payments SET status = 'confirmed', confirmed_at = ? WHERE id = ?",
+            (now, payment_id),
+        )
+        await db.commit()
