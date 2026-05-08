@@ -7,7 +7,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_ID, PLANS, XUI_SUB_URL
-from database import get_user, create_user, get_all_users, get_stats, update_subscription, add_payment
+from database import (
+    get_user, create_user, get_all_users, get_stats, update_subscription, add_payment,
+    reset_channel_verified_all, reset_channel_verified_user,
+)
 from keyboards import admin_menu, admin_free_buy_menu
 import xui_api
 
@@ -19,6 +22,7 @@ class AdminStates(StatesGroup):
     waiting_give_user_id = State()
     waiting_give_plan = State()
     waiting_broadcast = State()
+    waiting_reset_user_id = State()
 
 
 def is_admin(tg_id: int) -> bool:
@@ -55,10 +59,7 @@ async def cmd_ping(message: Message):
     else:
         await message.answer(
             "❌ <b>x-ui не отвечает</b>\n\n"
-            "Возможные причины:\n"
-            "• Истекла сессия\n"
-            "• Панель недоступна\n"
-            "• Неверный логин/пароль",
+            "Возможные причины:\n• Истекла сессия\n• Панель недоступна\n• Неверный логин/пароль",
             parse_mode="HTML",
         )
 
@@ -170,12 +171,8 @@ async def admin_give_plan(message: Message, state: FSMContext):
     extend = current_expiry is not None and current_expiry > now_ms
 
     ok = await xui_api.add_client_to_all_inbounds(
-        tg_id=target_id,
-        sub_id=sub_id,
-        days=plan["days"],
-        is_trial=False,
-        extend=extend,
-        current_expiry_ms=current_expiry,
+        tg_id=target_id, sub_id=sub_id, days=plan["days"],
+        is_trial=False, extend=extend, current_expiry_ms=current_expiry,
     )
     await update_subscription(target_id, plan["days"])
     await add_payment(target_id, plan_key, 0, "admin_gift", is_gift=1, gifted_by=ADMIN_ID)
@@ -183,15 +180,14 @@ async def admin_give_plan(message: Message, state: FSMContext):
     sub_url = f"{XUI_SUB_URL}/{sub_id}"
     if ok:
         await message.answer(
-            f"✅ Подписка <b>{plan['label']}</b> выдана пользователю <code>{target_id}</code>\n"
+            f"✅ Подписка <b>{plan['label']}</b> выдана <code>{target_id}</code>\n"
             f"🔗 Ссылка: <code>{sub_url}</code>",
             parse_mode="HTML",
         )
         try:
             await message.bot.send_message(
                 target_id,
-                f"🎁 <b>Вам выдана подписка!</b>\n\n"
-                f"📦 Тариф: {plan['label']}\n"
+                f"🎁 <b>Вам выдана подписка!</b>\n\n📦 Тариф: {plan['label']}\n"
                 f"🔗 Ссылка: <code>{sub_url}</code>",
                 parse_mode="HTML",
             )
@@ -235,12 +231,8 @@ async def admin_free_activate(call: CallbackQuery):
 
     await call.message.edit_text("⏳ Активирую...", parse_mode="HTML")
     ok = await xui_api.add_client_to_all_inbounds(
-        tg_id=tg_id,
-        sub_id=sub_id,
-        days=plan["days"],
-        is_trial=False,
-        extend=extend,
-        current_expiry_ms=current_expiry,
+        tg_id=tg_id, sub_id=sub_id, days=plan["days"],
+        is_trial=False, extend=extend, current_expiry_ms=current_expiry,
     )
     await update_subscription(tg_id, plan["days"])
     await add_payment(tg_id, plan_key, 0, "admin_free_test", is_gift=1, gifted_by=tg_id)
@@ -249,17 +241,74 @@ async def admin_free_activate(call: CallbackQuery):
     if ok:
         await call.message.edit_text(
             f"✅ <b>Бесплатная подписка активирована!</b>\n\n"
-            f"📦 Тариф: {plan['label']}\n"
-            f"🔗 Ссылка: <code>{sub_url}</code>",
-            reply_markup=admin_menu(),
-            parse_mode="HTML",
+            f"📦 Тариф: {plan['label']}\n🔗 Ссылка: <code>{sub_url}</code>",
+            reply_markup=admin_menu(), parse_mode="HTML",
         )
     else:
         await call.message.edit_text(
-            "❌ Ошибка при создании аккаунта.",
-            reply_markup=admin_menu(),
-            parse_mode="HTML",
+            "❌ Ошибка при создании аккаунта.", reply_markup=admin_menu(), parse_mode="HTML",
         )
+
+
+# ── Reset channel verification ────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:reset_sub")
+async def admin_reset_sub_confirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, сбросить всем", callback_data="admin:reset_sub_all")],
+        [InlineKeyboardButton(text="👤 Сбросить конкретному", callback_data="admin:reset_sub_one")],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data="admin:back")],
+    ])
+    await call.message.edit_text(
+        "🔄 <b>Сброс проверки подписки</b>\n\n"
+        "После сброса пользователи снова увидят запрос подписки на канал.\n\n"
+        "Сбросить всем или конкретному пользователю?",
+        reply_markup=kb, parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == "admin:reset_sub_all")
+async def admin_reset_sub_all(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    await reset_channel_verified_all()
+    await call.answer("✅ Сброшено для всех!", show_alert=True)
+    await call.message.edit_text(
+        "✅ <b>Проверка подписки сброшена для всех пользователей.</b>\n\n"
+        "Теперь при следующем обращении каждый снова увидит запрос подписки.",
+        reply_markup=admin_menu(), parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admin:reset_sub_one")
+async def admin_reset_sub_one_start(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        return
+    await state.set_state(AdminStates.waiting_reset_user_id)
+    await call.message.answer("👤 Введи <b>Telegram ID</b> пользователя для сброса:", parse_mode="HTML")
+    await call.answer()
+
+
+@router.message(AdminStates.waiting_reset_user_id)
+async def admin_reset_sub_one_do(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    try:
+        target_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Неверный ID.")
+        return
+    await state.clear()
+    await reset_channel_verified_user(target_id)
+    await message.answer(
+        f"✅ Проверка подписки сброшена для пользователя <code>{target_id}</code>.\n\n"
+        f"При следующем сообщении он увидит запрос подписки на канал.",
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "admin:broadcast")
@@ -284,26 +333,20 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("❌ Рассылка отменена.")
         return
-
     await state.clear()
     users = await get_all_users()
     text = message.text or ""
-
     sent = 0
     failed = 0
     status_msg = await message.answer(f"⏳ Начинаю рассылку {len(users)} пользователям...")
-
     for user in users:
         try:
             await message.bot.send_message(user["tg_id"], text, parse_mode="HTML")
             sent += 1
         except Exception:
             failed += 1
-
     await status_msg.edit_text(
-        f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"📤 Отправлено: <b>{sent}</b>\n"
-        f"❌ Не доставлено: <b>{failed}</b>",
+        f"✅ <b>Рассылка завершена!</b>\n\n📤 Отправлено: <b>{sent}</b>\n❌ Не доставлено: <b>{failed}</b>",
         parse_mode="HTML",
     )
 
@@ -313,8 +356,6 @@ async def admin_back(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     await call.message.edit_text(
-        "🔧 <b>Панель администратора</b>",
-        reply_markup=admin_menu(),
-        parse_mode="HTML",
+        "🔧 <b>Панель администратора</b>", reply_markup=admin_menu(), parse_mode="HTML",
     )
     await call.answer()
