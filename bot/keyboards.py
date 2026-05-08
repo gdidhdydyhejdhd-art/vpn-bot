@@ -20,25 +20,20 @@ def pin_keyboard(current: str = "", pin_len: int = 4) -> InlineKeyboardMarkup:
     """Numeric PIN pad inline keyboard."""
     entered = len(current)
     remaining = max(0, pin_len - entered)
-    if entered == 0:
-        display = "○" * pin_len
-    else:
-        display = "●" * entered + "○" * remaining
+    display_row = "●" * entered + "○" * remaining if entered else "○" * pin_len
 
     def btn(digit: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(text=digit, callback_data=f"pin:{current}{digit}")
 
     def del_btn() -> InlineKeyboardButton:
-        new = current[:-1] if current else ""
         return InlineKeyboardButton(text="⌫", callback_data=f"pin_del:{current}")
 
-    rows = [
+    return InlineKeyboardMarkup(inline_keyboard=[
         [btn("1"), btn("2"), btn("3")],
         [btn("4"), btn("5"), btn("6")],
         [btn("7"), btn("8"), btn("9")],
         [del_btn(), btn("0")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    ])
 
 
 def settings_menu(has_pin: bool = False) -> InlineKeyboardMarkup:
@@ -119,6 +114,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="👥 Все пользователи", callback_data="admin:users")],
         [InlineKeyboardButton(text="🎁 Выдать подписку", callback_data="admin:give")],
         [InlineKeyboardButton(text="🔧 Бесплатная покупка", callback_data="admin:free_buy")],
+        [InlineKeyboardButton(text="🔄 Сбросить проверку подписки", callback_data="admin:reset_sub")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="admin:broadcast")],
     ])
 
