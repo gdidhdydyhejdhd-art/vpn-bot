@@ -12,6 +12,8 @@ from database import init_db, get_user, create_user, add_referral
 from handlers import start, buy, trial, profile, admin
 from handlers import referral as referral_handler
 from handlers import subscription as subscription_handler
+from handlers import settings as settings_handler
+from handlers import ton_pay as ton_pay_handler
 from middlewares import ChannelSubscriptionMiddleware
 from reminders import reminder_loop
 import xui_api
@@ -86,6 +88,7 @@ async def main():
                 await add_referral(referrer_id, tg_id)
 
         from keyboards import main_menu
+        has_pin = bool(user.get("user_pin"))
         name = message.from_user.first_name or "друг"
 
         if referrer_id and user.get("referred_by") is None:
@@ -94,13 +97,13 @@ async def main():
                 f"Ты пришёл по реферальной ссылке 🎉\n"
                 f"Когда ты совершишь первую покупку, твой друг получит бонус!\n\n"
                 f"Выбери действие:",
-                reply_markup=main_menu(tg_id),
+                reply_markup=main_menu(tg_id, has_pin=has_pin),
                 parse_mode="HTML",
             )
         else:
             await message.answer(
                 f"👋 Привет, <b>{name}</b>! Выбери действие:",
-                reply_markup=main_menu(tg_id),
+                reply_markup=main_menu(tg_id, has_pin=has_pin),
                 parse_mode="HTML",
             )
 
@@ -108,7 +111,9 @@ async def main():
     dp.message.middleware(ChannelSubscriptionMiddleware())
     dp.callback_query.middleware(ChannelSubscriptionMiddleware())
 
-    # ── Routers ───────────────────────────────────────────────────────────────
+    # ── Routers (settings before others to capture FSM states) ───────────────
+    dp.include_router(settings_handler.router)
+    dp.include_router(ton_pay_handler.router)
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(buy.router)
