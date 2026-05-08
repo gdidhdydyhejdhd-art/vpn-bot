@@ -2,7 +2,7 @@ import logging
 from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 
 from config import ADMIN_ID, ACCESS_PIN
 from database import (
@@ -36,7 +36,7 @@ async def _notify_admin_no_rights(bot) -> None:
             ADMIN_ID,
             f"⚠️ <b>Бот не может проверять подписку на канал!</b>\n\n"
             f"Добавь <b>@Vpss_robot</b> как администратора канала <b>@{CHANNEL_USERNAME}</b>.\n\n"
-            f"До этого момента кнопка «Я подписался» будет работать на доверии.",
+            f"До этого момента кнопка «Я подписался» работает на доверии.",
             parse_mode="HTML",
         )
     except Exception:
@@ -104,44 +104,25 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
 
         # ── Per-user lock check ──────────────────────────────────────────────
         if user_db.get("is_locked") and user_db.get("user_pin"):
-            # If the user is setting a new PIN via FSM, skip lock (let handler process)
-            fsm_state = data.get("state")
-            current_state = None
-            if fsm_state:
-                try:
-                    current_state = await fsm_state.get_state()
-                except Exception:
-                    pass
-
-            if current_state == "SettingsState:waiting_for_pin":
-                return await handler(event, data)
-
-            if isinstance(event, Message) and event.text:
-                pin_input = event.text.strip()
-                if pin_input == user_db["user_pin"]:
-                    await set_user_locked(tg_id, False)
-                    from keyboards import main_menu
-                    await event.answer(
-                        "🔓 <b>Бот разблокирован! Добро пожаловать!</b>\n\nВыбери действие:",
-                        parse_mode="HTML",
-                        reply_markup=main_menu(tg_id, has_pin=True),
-                    )
-                    return
-                else:
-                    await event.answer(
-                        "🔒 <b>Бот заблокирован.</b>\n\n"
-                        "❌ Неверный PIN. Попробуй снова:",
-                        parse_mode="HTML",
-                    )
-                    return
-            elif isinstance(event, CallbackQuery):
-                await event.answer("🔒 Бот заблокирован. Введи PIN в чат.", show_alert=True)
+            # Allow PIN pad callbacks through to the handler
+            if isinstance(event, CallbackQuery):
+                if event.data.startswith("pin:") or event.data.startswith("pin_del:"):
+                    return await handler(event, data)
+                await event.answer("🔒 Введи PIN-код на экране", show_alert=True)
                 return
-            else:
-                # Other event types (e.g. stickers) while locked
-                if isinstance(event, Message):
-                    await event.answer("🔒 <b>Бот заблокирован.</b> Введи PIN-код:", parse_mode="HTML")
+
+            # For any message while locked — show PIN pad again
+            if isinstance(event, Message):
+                from keyboards import pin_keyboard
+                pin_len = len(user_db["user_pin"])
+                await event.answer("🔒", reply_markup=ReplyKeyboardRemove())
+                await event.answer(
+                    f"🔒 <b>Бот заблокирован</b>\n\n{'○' * pin_len}",
+                    parse_mode="HTML",
+                    reply_markup=pin_keyboard("", pin_len),
+                )
                 return
+            return
 
         # ── Channel subscription check ───────────────────────────────────────
         if user_db.get("channel_verified") or await has_active_subscription(tg_id):
@@ -157,7 +138,6 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
                     subscribed = True  # Trust-based fallback
 
                 if subscribed:
-                    # Answer the callback FIRST — removes loading indicator immediately
                     await event.answer("✅ Отлично! Добро пожаловать!", show_alert=True)
                     await set_channel_verified(tg_id)
                     from keyboards import main_menu
@@ -196,8 +176,7 @@ class ChannelSubscriptionMiddleware(BaseMiddleware):
         # Not subscribed — block
         text = (
             f"📢 <b>Для использования бота подпишись на наш канал:</b>\n\n"
-            f"👉 @{CHANNEL_USERNAME}\n\n"
-            "После подписки нажми кнопку ниже 👇"
+            f"👉 @{CHANNEL_USERNAME}\n\nПосле подписки нажми кнопку ниже 👇"
         )
         if isinstance(event, Message):
             await event.answer(text, reply_markup=_channel_keyboard(), parse_mode="HTML")
