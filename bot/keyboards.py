@@ -2,16 +2,29 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeybo
 from config import PLANS, ADMIN_ID
 
 
-def main_menu(tg_id: int = 0) -> ReplyKeyboardMarkup:
+def main_menu(tg_id: int = 0, has_pin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text="🛒 Купить VPN"), KeyboardButton(text="🎁 Пробный период")],
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="💼 Подписка")],
         [KeyboardButton(text="👥 Рефералы"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="📱 Инструкция"), KeyboardButton(text="📞 Поддержка")],
+        [KeyboardButton(text="📱 Инструкция"), KeyboardButton(text="⚙️ Настройки")],
     ]
+    if has_pin:
+        rows.append([KeyboardButton(text="🔒 Заблокировать")])
     if tg_id == ADMIN_ID:
         rows.append([KeyboardButton(text="🔧 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
+def settings_menu(has_pin: bool = False) -> InlineKeyboardMarkup:
+    buttons = []
+    if has_pin:
+        buttons.append([InlineKeyboardButton(text="🔑 Изменить PIN", callback_data="settings:set_pin")])
+        buttons.append([InlineKeyboardButton(text="🗑 Удалить PIN", callback_data="settings:remove_pin")])
+    else:
+        buttons.append([InlineKeyboardButton(text="🔐 Установить PIN-код", callback_data="settings:set_pin")])
+    buttons.append([InlineKeyboardButton(text="📞 Поддержка: @rl_highest", url="https://t.me/rl_highest")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def buy_menu() -> InlineKeyboardMarkup:
@@ -28,7 +41,20 @@ def confirm_buy(plan_key: str) -> InlineKeyboardMarkup:
             text=f"💳 Оплатить {plan['stars']} ⭐ Stars",
             callback_data=f"confirm_buy:{plan_key}",
         )],
+        [InlineKeyboardButton(
+            text="💎 Оплатить TON (скидка 5%)",
+            callback_data=f"buy_ton:{plan_key}",
+        )],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_buy")],
+    ])
+
+
+def ton_payment_keyboard(plan_key: str, ton_amount: float, comment: str, ton_link: str) -> InlineKeyboardMarkup:
+    cb = f"ton_check:{plan_key}:{ton_amount:.2f}:{comment}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 Открыть TON-кошелёк", url=ton_link)],
+        [InlineKeyboardButton(text="✅ Проверить оплату", callback_data=cb)],
+        [InlineKeyboardButton(text="◀️ Отмена", callback_data=f"buy:{plan_key}")],
     ])
 
 
