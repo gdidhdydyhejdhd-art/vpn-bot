@@ -24,5 +24,5 @@ PLANS: dict = {
     "1year":   {"stars": 500, "days": 365, "label": "1 год — 500 ⭐"},
 }
 
-TRIAL_DAYS: int = 7
+TRIAL_DAYS: int = 5
 TRIAL_GB: int = 1
