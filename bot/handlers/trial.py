@@ -55,7 +55,12 @@ async def cmd_trial(message: Message):
 
     reserved = await mark_trial_used(tg_id)
     if not reserved:
-        await message.answer("❌ Пробный период уже был использован.")
+        from keyboards import main_menu
+        has_pin = bool(user.get("user_pin"))
+        await message.answer(
+            "❌ Пробный период уже был использован.",
+            reply_markup=main_menu(tg_id, has_pin=has_pin),
+        )
         return
 
     try:
@@ -75,11 +80,14 @@ async def cmd_trial(message: Message):
         except asyncio.TimeoutError:
             logger.error("Trial xui timeout for user %s", tg_id)
             await unmark_trial_used(tg_id)
+            from keyboards import main_menu
+            has_pin = bool(user.get("user_pin"))
             await message.answer(
                 f"⚠️ Сервер VPN не ответил вовремя.\n"
                 f"Попробуйте ещё раз или обратитесь в поддержку: @rl_highest\n"
                 f"ID: <code>{tg_id}</code>",
                 parse_mode="HTML",
+                reply_markup=main_menu(tg_id, has_pin=has_pin),
             )
             return
 
@@ -101,12 +109,20 @@ async def cmd_trial(message: Message):
             )
         else:
             await unmark_trial_used(tg_id)
+            from keyboards import main_menu
+            has_pin = bool(user.get("user_pin"))
             await message.answer(
                 f"⚠️ Ошибка при создании VPN-аккаунта.\n"
                 f"Обратитесь в поддержку с ID: <code>{tg_id}</code>",
                 parse_mode="HTML",
+                reply_markup=main_menu(tg_id, has_pin=has_pin),
             )
     except Exception as e:
         logger.exception("Trial provisioning failed for %s: %s", tg_id, e)
         await unmark_trial_used(tg_id)
-        await message.answer("⚠️ Внутренняя ошибка при выдаче пробного периода. Попробуйте позже.")
+        from keyboards import main_menu
+        has_pin = bool(user.get("user_pin"))
+        await message.answer(
+            "⚠️ Внутренняя ошибка при выдаче пробного периода. Попробуйте позже.",
+            reply_markup=main_menu(tg_id, has_pin=has_pin),
+        )
