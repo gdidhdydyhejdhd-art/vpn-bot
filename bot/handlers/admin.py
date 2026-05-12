@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from aiogram import Router, F
@@ -166,35 +167,57 @@ async def admin_give_plan(message: Message, state: FSMContext):
         user = await create_user(target_id, None, f"User{target_id}")
 
     sub_id = user["sub_id"]
-    current_expiry = await xui_api.get_expiry_for_user(target_id)
-    now_ms = int(datetime.utcnow().timestamp() * 1000)
-    extend = current_expiry is not None and current_expiry > now_ms
 
-    ok = await xui_api.add_client_to_all_inbounds(
-        tg_id=target_id, sub_id=sub_id, days=plan["days"],
-        is_trial=False, extend=extend, current_expiry_ms=current_expiry,
-    )
-    await update_subscription(target_id, plan["days"])
-    await add_payment(target_id, plan_key, 0, "admin_gift", is_gift=1, gifted_by=ADMIN_ID)
+    await message.answer(f"⏳ Выдаю подписку <b>{plan['label']}</b> пользователю <code>{target_id}</code>...", parse_mode="HTML")
 
-    sub_url = f"{XUI_SUB_URL}/{sub_id}"
-    if ok:
-        await message.answer(
-            f"✅ Подписка <b>{plan['label']}</b> выдана <code>{target_id}</code>\n"
-            f"🔗 Ссылка: <code>{sub_url}</code>",
-            parse_mode="HTML",
+    try:
+        current_expiry = await xui_api.get_expiry_for_user(target_id)
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        extend = current_expiry is not None and current_expiry > now_ms
+
+        ok = await asyncio.wait_for(
+            xui_api.add_client_to_all_inbounds(
+                tg_id=target_id, sub_id=sub_id, days=plan["days"],
+                is_trial=False, extend=extend, current_expiry_ms=current_expiry,
+            ),
+            timeout=60,
         )
-        try:
-            await message.bot.send_message(
-                target_id,
-                f"🎁 <b>Вам выдана подписка!</b>\n\n📦 Тариф: {plan['label']}\n"
+        await update_subscription(target_id, plan["days"])
+        await add_payment(target_id, plan_key, 0, "admin_gift", is_gift=1, gifted_by=ADMIN_ID)
+
+        sub_url = f"{XUI_SUB_URL}/{sub_id}"
+        if ok:
+            await message.answer(
+                f"✅ Подписка <b>{plan['label']}</b> выдана <code>{target_id}</code>\n"
                 f"🔗 Ссылка: <code>{sub_url}</code>",
                 parse_mode="HTML",
             )
-        except Exception:
-            pass
-    else:
-        await message.answer("❌ Ошибка при создании VPN-аккаунта. Проверь x-ui панель.")
+            try:
+                await message.bot.send_message(
+                    target_id,
+                    f"🎁 <b>Вам выдана подписка!</b>\n\n📦 Тариф: {plan['label']}\n"
+                    f"🔗 Ссылка: <code>{sub_url}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        else:
+            await message.answer("❌ Ошибка при создании VPN-аккаунта. Проверь x-ui панель.")
+    except asyncio.TimeoutError:
+        logger.error("admin_give xui timeout for target %s", target_id)
+        await message.answer(
+            f"⚠️ Сервер VPN не ответил вовремя.\n"
+            f"Попробуй снова или проверь x-ui панель.\n"
+            f"ID пользователя: <code>{target_id}</code>",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.exception("admin_give failed for target %s: %s", target_id, e)
+        await message.answer(
+            f"❌ Ошибка при выдаче подписки: {e}\n"
+            f"ID пользователя: <code>{target_id}</code>",
+            parse_mode="HTML",
+        )
 
 
 @router.callback_query(F.data == "admin:free_buy")
@@ -230,23 +253,38 @@ async def admin_free_activate(call: CallbackQuery):
     extend = current_expiry is not None and current_expiry > now_ms
 
     await call.message.edit_text("⏳ Активирую...", parse_mode="HTML")
-    ok = await xui_api.add_client_to_all_inbounds(
-        tg_id=tg_id, sub_id=sub_id, days=plan["days"],
-        is_trial=False, extend=extend, current_expiry_ms=current_expiry,
-    )
-    await update_subscription(tg_id, plan["days"])
-    await add_payment(tg_id, plan_key, 0, "admin_free_test", is_gift=1, gifted_by=tg_id)
 
-    sub_url = f"{XUI_SUB_URL}/{sub_id}"
-    if ok:
+    try:
+        ok = await asyncio.wait_for(
+            xui_api.add_client_to_all_inbounds(
+                tg_id=tg_id, sub_id=sub_id, days=plan["days"],
+                is_trial=False, extend=extend, current_expiry_ms=current_expiry,
+            ),
+            timeout=60,
+        )
+        await update_subscription(tg_id, plan["days"])
+        await add_payment(tg_id, plan_key, 0, "admin_free_test", is_gift=1, gifted_by=tg_id)
+
+        sub_url = f"{XUI_SUB_URL}/{sub_id}"
+        if ok:
+            await call.message.edit_text(
+                f"✅ <b>Бесплатная подписка активирована!</b>\n\n"
+                f"📦 Тариф: {plan['label']}\n🔗 Ссылка: <code>{sub_url}</code>",
+                reply_markup=admin_menu(), parse_mode="HTML",
+            )
+        else:
+            await call.message.edit_text(
+                "❌ Ошибка при создании аккаунта.", reply_markup=admin_menu(), parse_mode="HTML",
+            )
+    except asyncio.TimeoutError:
         await call.message.edit_text(
-            f"✅ <b>Бесплатная подписка активирована!</b>\n\n"
-            f"📦 Тариф: {plan['label']}\n🔗 Ссылка: <code>{sub_url}</code>",
+            "⚠️ Сервер VPN не ответил вовремя. Попробуй снова.",
             reply_markup=admin_menu(), parse_mode="HTML",
         )
-    else:
+    except Exception as e:
+        logger.exception("admin_free_activate failed: %s", e)
         await call.message.edit_text(
-            "❌ Ошибка при создании аккаунта.", reply_markup=admin_menu(), parse_mode="HTML",
+            f"❌ Ошибка: {e}", reply_markup=admin_menu(), parse_mode="HTML",
         )
 
 
