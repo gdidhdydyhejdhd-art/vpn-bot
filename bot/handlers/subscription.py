@@ -7,9 +7,9 @@ from aiogram.types import Message, CallbackQuery
 from config import XUI_SUB_URL
 from database import (
     get_user, create_user, freeze_subscription, unfreeze_subscription,
-    cancel_subscription, update_subscription,
+    update_subscription,
 )
-from keyboards import subscription_menu, cancel_confirm_menu, buy_menu
+from keyboards import subscription_menu, buy_menu
 import xui_api
 
 logger = logging.getLogger(__name__)
@@ -58,13 +58,12 @@ async def _build_sub_text(tg_id: int) -> tuple[str, bool, bool]:
     is_frozen = bool(frozen_until and not sub_end)
 
     if is_frozen:
-        # Calculate days remaining at freeze time
         try:
             fu = datetime.fromisoformat(frozen_until)
             fa = datetime.fromisoformat(frozen_at)
             days_frozen = (datetime.utcnow() - fa).days
             remaining_at_freeze = max(0, (fu - fa).days)
-            remaining_now = remaining_at_freeze  # will be extended on unfreeze
+            remaining_now = remaining_at_freeze
         except Exception:
             remaining_at_freeze = 0
             days_frozen = 0
@@ -184,48 +183,3 @@ async def sub_unfreeze(call: CallbackQuery):
     except Exception:
         await call.message.answer(text, parse_mode="HTML", reply_markup=subscription_menu(is_frozen, has_sub))
     await call.answer("🔓 Подписка разморожена!")
-
-
-@router.callback_query(F.data == "sub:cancel_confirm")
-async def sub_cancel_confirm(call: CallbackQuery):
-    try:
-        await call.message.edit_text(
-            "⚠️ <b>Удалить подписку?</b>\n\n"
-            "Это отключит VPN-доступ. Деньги не возвращаются.\n\n"
-            "Ты уверен?",
-            parse_mode="HTML",
-            reply_markup=cancel_confirm_menu(),
-        )
-    except Exception:
-        pass
-    await call.answer()
-
-
-@router.callback_query(F.data == "sub:cancel_do")
-async def sub_cancel_do(call: CallbackQuery):
-    tg_id = call.from_user.id
-    user = await get_user(tg_id)
-    sub_id = user.get("sub_id", "") if user else ""
-
-    await cancel_subscription(tg_id)
-
-    if sub_id:
-        try:
-            await xui_api.login()
-            await asyncio.wait_for(
-                xui_api.toggle_client_in_all_inbounds(tg_id, sub_id, enable=False),
-                timeout=60,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to disable x-ui clients for {tg_id}: {e}")
-
-    try:
-        await call.message.edit_text(
-            "✅ <b>Подписка удалена.</b>\n\n"
-            "VPN-доступ отключён. Ты всегда можешь купить новую подписку 🛒",
-            parse_mode="HTML",
-            reply_markup=subscription_menu(False, False),
-        )
-    except Exception:
-        await call.message.answer("✅ Подписка удалена.")
-    await call.answer("Подписка удалена")
