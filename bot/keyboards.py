@@ -95,17 +95,9 @@ def subscription_menu(is_frozen: bool = False, has_sub: bool = False) -> InlineK
     elif has_sub:
         buttons.append([InlineKeyboardButton(text="🛒 Продлить подписку", callback_data="sub:extend")])
         buttons.append([InlineKeyboardButton(text="🧊 Заморозить подписку", callback_data="sub:freeze")])
-        buttons.append([InlineKeyboardButton(text="🗑 Удалить подписку", callback_data="sub:cancel_confirm")])
     else:
         buttons.append([InlineKeyboardButton(text="🛒 Купить подписку", callback_data="sub:extend")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def cancel_confirm_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Да, удалить", callback_data="sub:cancel_do")],
-        [InlineKeyboardButton(text="◀️ Отмена", callback_data="sub:back")],
-    ])
 
 
 def admin_menu() -> InlineKeyboardMarkup:
