@@ -48,7 +48,7 @@ async def on_plan_select(call: CallbackQuery):
         f"📦 <b>{plan['label']}</b>\n\n"
         f"✅ Неограниченный трафик\n"
         f"✅ Несколько серверов\n"
-        f"✅ Один ключ — все серверы\n\n"
+        f"✅ Один ключ — подключи всю семью\n\n"
         f"💳 Стоимость: <b>{plan['stars']} ⭐ Stars</b>"
     )
     await call.message.edit_text(text, reply_markup=confirm_buy(plan_key), parse_mode="HTML")
@@ -132,15 +132,16 @@ async def on_successful_payment(message: Message):
 
     if ok:
         await message.answer(
-            f"✅ <b>Подписка активирована!</b>\n\n"
-            f"📦 Тариф: <b>{plan['label']}</b>\n"
-            f"🔗 Ссылка для подключения:\n<code>{sub_url}</code>\n\n"
-            f"💡 Импортируй эту ссылку в любой VLESS-клиент:\n\n"
-            f"🤖 <b>Android:</b> v2rayNG, Hiddify, Happ, INCY VPN\n"
-            f"🍎 <b>iOS:</b> Streisand, Shadowrocket, V2RayTun, Happ, FoXray\n"
-            f"🖥 <b>Windows/Mac:</b> Hiddify, v2rayN, NekoRay",
-            parse_mode="HTML",
-        )
+    f"✅ <b>Подписка активирована!</b>\n\n"
+    f"📦 Тариф: <b>{plan['label']}</b>\n"
+    f"🔗 Ссылка для подключения:\n<code>{sub_url}</code>\n\n"
+    f"💡 Импортируй эту ссылку в любой VLESS-клиент:\n\n"
+    f"🤖 <b>Android:</b> ⭐ v2rayTun, v2rayNG, Hiddify, NekoBox, Happ, Incy, Sing-box\n"
+    f"🍎 <b>iOS:</b> Incy, Streisand, Shadowrocket, V2RayTun, FoXray, Hiddify, Happ, Loom, Sing-box\n"
+    f"🖥 <b>Windows/Mac:</b> Hiddify, v2rayN, v2raytun, NekoRay, Incy, Sing-box, Invisible Man - Xray",
+    parse_mode="HTML",
+)
+
     else:
         await message.answer(
             f"⚠️ Оплата прошла, но возникла ошибка при создании VPN-аккаунта.\n"
