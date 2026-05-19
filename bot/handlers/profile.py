@@ -160,6 +160,6 @@ async def profile_payments(call: CallbackQuery):
             stars = p.get("stars", "?")
             lines.append(f"💳 {paid_at} — {label} ({stars} ⭐)")
 
-    text = "💳 <b>История платежей (последние 10):</b>\n\n" + "\n".join(lines)
+    text = "💳 <b>История платежей:</b>\n\n" + "\n".join(lines)
     await call.message.answer(text, parse_mode="HTML")
     await call.answer()
